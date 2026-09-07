@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+backend/data/
+
+# Node
+node_modules/
+dist/
+.vite/
+*.local
+
+# Env
+.env
+
+# Logs / temp
+*.log
+*.txt.tmp
+be_out.log
+be_err.log
+fe_out.log
+fe_err.log
+
+# OS
+.DS_Store
+Thumbs.db

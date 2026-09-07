@@ -1,0 +1,156 @@
+// Centralized API service - all backend communication goes through this module.
+import type {
+  Analytics,
+  Health,
+  HistoryItem,
+  HistoryQuery,
+  HistoryResponse,
+  ModelInfo,
+  NewsAnalysisResult,
+  ReviewAnalysisResult,
+  Stats,
+  TrainResponse,
+} from "@/types";
+
+const API_URL = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
+
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+      ...init,
+    });
+  } catch {
+    throw new ApiError(
+      "Cannot reach the TruthLens API. Make sure the backend is running.",
+      0
+    );
+  }
+
+  if (!response.ok) {
+    let message = `Request failed with status ${response.status}.`;
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === "string") {
+        message = body.detail;
+      } else if (Array.isArray(body?.detail)) {
+        // FastAPI default validation errors
+        const first = body.detail[0];
+        message = first?.msg ? `${first.msg}` : message;
+      }
+    } catch {
+      // ignore body parse errors
+    }
+    throw new ApiError(message, response.status);
+  }
+
+  return (await response.json()) as T;
+}
+
+function qs(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== "") search.set(k, String(v));
+  });
+  const s = search.toString();
+  return s ? `?${s}` : "";
+}
+
+// ---------------------------------------------------------------------------
+// Endpoints
+// ---------------------------------------------------------------------------
+
+export function analyzeNews(payload: {
+  headline: string;
+  content: string;
+  source_url?: string;
+}): Promise<NewsAnalysisResult> {
+  return request<NewsAnalysisResult>("/api/news/analyze", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function analyzeReview(payload: {
+  review_text: string;
+  product_name?: string;
+  rating?: number;
+  verified_purchase?: boolean;
+}): Promise<ReviewAnalysisResult> {
+  return request<ReviewAnalysisResult>("/api/reviews/analyze", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getStats(): Promise<Stats> {
+  return request<Stats>("/api/stats");
+}
+
+export function getHistory(query: HistoryQuery = {}): Promise<HistoryResponse> {
+  return request<HistoryResponse>(
+    `/api/history${qs({
+      type: query.type,
+      prediction: query.prediction,
+      q: query.q,
+      sort: query.sort,
+      page: query.page,
+      page_size: query.page_size,
+    })}`
+  );
+}
+
+export function getHistoryItem(id: number): Promise<HistoryItem> {
+  return request<HistoryItem>(`/api/history/${id}`);
+}
+
+export function deleteHistoryItem(id: number): Promise<{ deleted: number }> {
+  return request<{ deleted: number }>(`/api/history/${id}`, { method: "DELETE" });
+}
+
+export function clearHistory(): Promise<{ deleted: number }> {
+  return request<{ deleted: number }>("/api/history", { method: "DELETE" });
+}
+
+export function getAnalytics(): Promise<Analytics> {
+  return request<Analytics>("/api/analytics");
+}
+
+export function getHealth(): Promise<Health> {
+  return request<Health>("/api/health");
+}
+
+export function getModelInfo(): Promise<ModelInfo[]> {
+  return request<ModelInfo[]>("/api/models/info");
+}
+
+export function trainModels(model: "all" | "news" | "reviews" = "all"): Promise<TrainResponse> {
+  return request<TrainResponse>("/api/models/train", {
+    method: "POST",
+    body: JSON.stringify({ model }),
+  });
+}
+
+export interface FetchedArticle {
+  url: string;
+  headline: string;
+  content: string;
+}
+
+export function fetchArticleFromUrl(url: string): Promise<FetchedArticle> {
+  return request<FetchedArticle>("/api/news/fetch-url", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+}
+
+export const API_BASE_URL = API_URL;
