@@ -14,6 +14,41 @@ import type {
 
 const API_URL = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
 
+// ---------------------------------------------------------------------------
+// API key (required by the sensitive endpoints - see README "Security Notes")
+// Resolution order: key saved in this browser, then the build-time VITE_API_KEY.
+// ---------------------------------------------------------------------------
+const API_KEY_STORAGE_KEY = "truthlens-api-key";
+
+export function getStoredApiKey(): string {
+  try {
+    return (localStorage.getItem(API_KEY_STORAGE_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export function getActiveApiKey(): string {
+  return (getStoredApiKey() || import.meta.env.VITE_API_KEY || "").trim();
+}
+
+export function setStoredApiKey(key: string): void {
+  try {
+    const trimmed = key.trim();
+    if (trimmed) {
+      localStorage.setItem(API_KEY_STORAGE_KEY, trimmed);
+    } else {
+      localStorage.removeItem(API_KEY_STORAGE_KEY);
+    }
+  } catch {
+    // storage unavailable (private mode) - the env var still applies
+  }
+}
+
+export function hasActiveApiKey(): boolean {
+  return getActiveApiKey().length > 0;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -23,10 +58,15 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const apiKey = getActiveApiKey();
   let response: Response;
   try {
     response = await fetch(`${API_URL}${path}`, {
-      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { "X-API-Key": apiKey } : {}),
+        ...(init?.headers || {}),
+      },
       ...init,
     });
   } catch {

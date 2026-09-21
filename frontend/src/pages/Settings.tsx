@@ -7,10 +7,23 @@ import {
   Cpu,
   BrainCircuit,
   ArrowRight,
+  KeyRound,
+  ShieldCheck,
+  ShieldAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { clearHistory, deleteHistoryItem, getHealth, getHistory, getStats } from "@/services/api";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  ApiError,
+  clearHistory,
+  getHealth,
+  getStats,
+  getStoredApiKey,
+  hasActiveApiKey,
+  setStoredApiKey,
+} from "@/services/api";
 import type { Health, Stats } from "@/types";
 import { formatDateTime } from "@/lib/utils";
 
@@ -30,6 +43,8 @@ export default function Settings() {
   const [health, setHealth] = useState<Health | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [apiKey, setApiKey] = useState(() => getStoredApiKey());
+  const [keyActive, setKeyActive] = useState(() => hasActiveApiKey());
 
   const refresh = () => {
     getHealth().then(setHealth).catch(() => setHealth(null));
@@ -37,14 +52,26 @@ export default function Settings() {
   };
   useEffect(refresh, []);
 
+  function handleSaveApiKey() {
+    setStoredApiKey(apiKey);
+    const active = hasActiveApiKey();
+    setKeyActive(active);
+    if (apiKey.trim()) {
+      toast.success("API key saved in this browser for sensitive actions.");
+    } else {
+      toast.info("Stored API key cleared.");
+    }
+  }
+
   async function handleClearHistory() {
     setClearing(true);
     try {
       const res = await clearHistory();
       toast.success(`${res.deleted} record${res.deleted === 1 ? "" : "s"} removed from the database.`);
       refresh();
-    } catch {
-      toast.error("Could not clear the history.");
+    } catch (err) {
+      // Surfaces the backend's 401/503 guidance (missing or invalid API key).
+      toast.error(err instanceof ApiError ? err.message : "Could not clear the history.");
     } finally {
       setClearing(false);
     }
@@ -79,6 +106,58 @@ export default function Settings() {
         )}
       </section>
 
+      <section className="rounded-xl border border-border/70 bg-card/70 p-5" aria-label="API key">
+        <div className="flex flex-wrap items-center gap-2">
+          <KeyRound className="h-4 w-4 text-cyan-300" aria-hidden="true" />
+          <h2 className="font-display text-base font-semibold">API key</h2>
+          <Badge variant={keyActive ? "success" : "warning"}>
+            {keyActive ? "Key available" : "No key"}
+          </Badge>
+        </div>
+        <p className="mb-4 mt-1.5 text-xs leading-relaxed text-muted-foreground">
+          Sensitive actions such as deleting history or retraining models require the key the
+          backend was started with (<code className="rounded bg-muted px-1">TRUTHLENS_API_KEY</code>).
+          It is kept in this browser only and is never committed.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-[260px] flex-1">
+            <Label htmlFor="api-key" className="mb-2 block">API key</Label>
+            <Input
+              id="api-key"
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="Paste the value of TRUTHLENS_API_KEY"
+              autoComplete="off"
+              spellCheck={false}
+              maxLength={256}
+            />
+          </div>
+          <Button onClick={handleSaveApiKey}>Save key</Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setApiKey("");
+              setStoredApiKey("");
+              setKeyActive(hasActiveApiKey());
+              toast.info("Stored API key removed.");
+            }}
+          >
+            Remove stored key
+          </Button>
+        </div>
+        <p className="mt-3 flex items-start gap-1.5 text-[11px] text-muted-foreground">
+          {keyActive ? (
+            <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" aria-hidden="true" />
+          ) : (
+            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" aria-hidden="true" />
+          )}
+          {keyActive
+            ? "Requests to protected endpoints include the X-API-Key header."
+            : "Protected actions fail with 401 until a key is provided."}
+        </p>
+      </section>
+
       <section className="rounded-xl border border-border/70 bg-card/70 p-5" aria-label="Data management">
         <h2 className="font-display text-base font-semibold">Data management</h2>
         <p className="mb-4 text-xs text-muted-foreground">
@@ -89,7 +168,7 @@ export default function Settings() {
             {clearing ? "Clearing…" : "Clear all analysis history"}
           </Button>
           <span className="text-xs text-muted-foreground">
-            Deletes every record from SQLite. This cannot be undone.
+            Deletes every record from SQLite. Requires the API key; this cannot be undone.
           </span>
         </div>
       </section>
