@@ -14,7 +14,6 @@ import {
   AlertTriangle,
   FlaskConical,
   RotateCcw,
-  Link,
   Globe,
   Loader2,
 } from "lucide-react";
@@ -28,7 +27,7 @@ import { ConfidenceRing } from "@/components/ConfidenceRing";
 import { AnalysisStepper } from "@/components/AnalysisStepper";
 import { SignalList } from "@/components/SignalList";
 import { TextStatsGrid } from "@/components/TextStatsGrid";
-import { analyzeNews, fetchArticleFromUrl, ApiError } from "@/services/api";
+import { analyzeNews, fetchArticleFromUrl, analyzeNewsUrl, ApiError } from "@/services/api";
 import type { NewsAnalysisResult } from "@/types";
 import { DEMO_NEWS_MISINFORMATIVE, DEMO_NEWS_REAL } from "@/lib/examples";
 import { cn } from "@/lib/utils";
@@ -38,7 +37,39 @@ const MAX_CONTENT = 20000;
 
 const ANALYSIS_STEPS = ["Collecting text features", "Processing NLP features", "Running ML classifier", "Generating result"];
 
-type InputMode = "paste" | "url";
+const VIDEO_PATTERNS: RegExp[] = [
+  /youtube\.com/i,
+  /youtu\.be/i,
+  /youtube-nocookie\.com/i,
+  /vimeo\.com/i,
+  /tiktok\.com/i,
+  /vm\.tiktok\.com/i,
+  /dailymotion\.com/i,
+  /dai\.ly/i,
+  /twitch\.tv/i,
+  /facebook\.com\/.*\/videos/i,
+  /fb\.watch/i,
+  /instagram\.com\/(reel|reels|p|tv)/i,
+  /rumble\.com/i,
+  /bitchute\.com/i,
+  /odysee\.com/i,
+  /\.(mp4|webm|mov|m3u8)(\?|#|$)/i,
+];
+
+function isVideoLink(value: string): boolean {
+  const v = (value || "").trim();
+  if (!v) return false;
+  return VIDEO_PATTERNS.some((re) => re.test(v));
+}
+
+function isValidHttpUrl(value: string): boolean {
+  try {
+    const u = new URL((value || "").trim());
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 function VerdictCard({ result }: { result: NewsAnalysisResult }) {
   const isMisinformative = result.prediction === "misinformative";
@@ -123,7 +154,6 @@ function VerdictCard({ result }: { result: NewsAnalysisResult }) {
   );
 }
 export default function NewsDetector() {
-  const [inputMode, setInputMode] = useState<InputMode>("paste");
   const [headline, setHeadline] = useState("");
   const [content, setContent] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
@@ -131,27 +161,68 @@ export default function NewsDetector() {
   const [urlLoading, setUrlLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<NewsAnalysisResult | null>(null);
+  const [fallbackHint, setFallbackHint] = useState<string | null>(null);
   const [, setStepIndex] = useState(0);
 
   const totalChars = headline.length + content.length;
-  const canSubmit = useMemo(() => totalChars >= 20 && !loading, [totalChars, loading]);
+  // Dynamic mode: text present -> text mode active; URL present -> link mode
+  // active. Only one mode drives its Analyze button; empty form disables both.
+  const textFilled = useMemo(() => totalChars >= 20, [totalChars]);
+  const urlValue = urlInput.trim();
+  const urlFilled = useMemo(() => urlValue.length > 0 && isValidHttpUrl(urlValue), [urlValue]);
+  const urlIsVideo = useMemo(() => isVideoLink(urlValue), [urlValue]);
+  const activeMode: "text" | "link" | null = textFilled ? "text" : urlFilled ? "link" : null;
+  const canAnalyzeText = textFilled && !loading && !urlLoading;
+  const canAnalyzeUrl = urlFilled && !loading && !urlLoading;
+  // Back-compat alias for the text Analyze button.
+  const canSubmit = canAnalyzeText;
+
+  const startStepper = () => {
+    setStepIndex(0);
+    return setInterval(() => {
+      setStepIndex((s) => Math.min(s + 1, ANALYSIS_STEPS.length - 1));
+    }, 650);
+  };
+
+  const finishAnalyze = (response: NewsAnalysisResult, label: string) => {
+    setResult(response);
+    setFallbackHint(null);
+    toast.success(`${label} complete — ${(response.confidence * 100).toFixed(1)}% confidence`);
+  };
+
+  const isPasteFallbackError = (message: string): boolean =>
+    /javascript/i.test(message) || /paste/i.test(message) || /fallback/i.test(message);
+
+  const showFallbackHint = (message: string, url: string) => {
+    // JS-shell pages (MSN/Bing-style): keep the URL as source, guide the user
+    // to paste headline + paragraphs manually, then use Analyze Article.
+    setFallbackHint(message);
+    if (sourceUrl.trim() !== url.trim()) setSourceUrl(url.trim());
+    toast.error("No readable text at this URL — paste the article text instead.", { duration: 6000 });
+  };
 
   const handleFetchUrl = async () => {
     if (!urlInput.trim()) {
-      toast.error("Please enter a URL to fetch.");
+      toast.error("Please enter a URL or video link to fetch.");
       return;
     }
     setUrlLoading(true);
+    setFallbackHint(null);
     try {
       const article = await fetchArticleFromUrl(urlInput.trim());
+      const kindLabel = article.is_video || article.kind === "video" ? "Video metadata" : "Article";
       setHeadline(article.headline);
       setContent(article.content);
       setSourceUrl(article.url);
-      setInputMode("paste");
-      toast.success("Article fetched! Review the content and click Analyze.");
+      toast.success(`${kindLabel} fetched! Review the content and click Analyze.`);
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Failed to fetch the article.";
-      toast.error(message);
+      const failedUrl = urlInput.trim();
+      if (err instanceof ApiError && err.status === 422 && isPasteFallbackError(message)) {
+        showFallbackHint(`${message} Source kept: ${failedUrl}`, failedUrl);
+      } else {
+        toast.error(message);
+      }
     } finally {
       setUrlLoading(false);
     }
@@ -164,20 +235,47 @@ export default function NewsDetector() {
     }
     setLoading(true);
     setResult(null);
-    const stepper = setInterval(() => {
-      setStepIndex((s) => Math.min(s + 1, ANALYSIS_STEPS.length - 1));
-    }, 650);
+    const stepper = startStepper();
     try {
       const response = await analyzeNews({
         headline: headline.trim(),
         content: content.trim(),
         source_url: sourceUrl.trim() || undefined,
       });
-      setResult(response);
-      toast.success(`Analysis complete — ${(response.confidence * 100).toFixed(1)}% confidence`);
+      finishAnalyze(response, "Analysis");
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Analysis failed. Please try again.";
       toast.error(message);
+    } finally {
+      clearInterval(stepper);
+      setLoading(false);
+      setStepIndex(0);
+    }
+  }
+
+  async function handleAnalyzeUrl() {
+    if (!urlFilled) {
+      toast.error("Please enter a valid URL or video link to analyze.");
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    setFallbackHint(null);
+    const stepper = startStepper();
+    try {
+      // One-shot: backend fetches + analyses (same output shape). Video links
+      // (YouTube/Vimeo/...) go to the same endpoint — it detects them there.
+      const response = await analyzeNewsUrl(urlValue);
+      setHeadline(response.headline || "");
+      setSourceUrl(response.source_url || urlValue);
+      finishAnalyze(response, urlIsVideo ? "Video analysis" : "URL analysis");
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "URL analysis failed. Please try again.";
+      if (err instanceof ApiError && err.status === 422 && isPasteFallbackError(message)) {
+        showFallbackHint(`${message} Source kept: ${urlValue}`, urlValue);
+      } else {
+        toast.error(message);
+      }
     } finally {
       clearInterval(stepper);
       setLoading(false);
@@ -191,6 +289,7 @@ export default function NewsDetector() {
     setSourceUrl("");
     setUrlInput("");
     setResult(null);
+    setFallbackHint(null);
   }
 
   function loadExample(which: "real" | "fake") {
@@ -199,7 +298,7 @@ export default function NewsDetector() {
     setContent(example.content);
     setSourceUrl(example.source_url);
     setResult(null);
-    setInputMode("paste");
+    setFallbackHint(null);
     toast.info("Demo example loaded — it will go through the real ML pipeline.");
   }
 
@@ -224,64 +323,72 @@ export default function NewsDetector() {
         {/* Input panel */}
         <Card className="h-fit xl:col-span-2">
           <CardContent className="p-6">
-            {/* Tab toggle */}
-            <div className="mb-5 flex rounded-lg border border-border/60 bg-background/40 p-1">
-              <button
-                type="button"
-                onClick={() => setInputMode("paste")}
+            {/* Dynamic mode status — text OR link, never both */}
+            <div
+              role="status"
+              aria-live="polite"
+              className={cn(
+                "mb-5 flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-[13px] transition-colors",
+                activeMode === "text" && "border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
+                activeMode === "link" && "border-cyan-500/40 bg-cyan-500/10 text-cyan-200",
+                activeMode === null && "border-border/60 bg-muted/30 text-muted-foreground"
+              )}
+            >
+              <span
                 className={cn(
-                  "flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-all",
-                  inputMode === "paste"
-                    ? "bg-violet-600 text-white shadow-md shadow-violet-950/30"
-                    : "text-muted-foreground hover:text-foreground"
+                  "h-2 w-2 shrink-0 rounded-full",
+                  activeMode === "text" && "bg-emerald-400",
+                  activeMode === "link" && "bg-cyan-400",
+                  activeMode === null && "bg-muted-foreground/50"
                 )}
-              >
-                <Newspaper className="h-4 w-4" aria-hidden="true" />
-                Paste Article
-              </button>
-              <button
-                type="button"
-                onClick={() => setInputMode("url")}
-                className={cn(
-                  "flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-all",
-                  inputMode === "url"
-                    ? "bg-violet-600 text-white shadow-md shadow-violet-950/30"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                <Link className="h-4 w-4" aria-hidden="true" />
-                Analyze URL
-              </button>
+                aria-hidden="true"
+              />
+              {activeMode === "text" ? (
+                <span><strong className="font-semibold">Text mode active</strong> — URL field disabled. Fill headline + article, then press “Analyze Article”.</span>
+              ) : activeMode === "link" ? (
+                <span><strong className="font-semibold">{urlIsVideo ? "Video mode active" : "URL mode active"}</strong> — text fields disabled. Press “Analyze URL” to fetch + analyze in one step.</span>
+              ) : (
+                <span>Enter <strong className="font-semibold">text</strong> or a <strong className="font-semibold">URL / video link</strong> — the matching Analyze button enables automatically.</span>
+              )}
             </div>
 
-            <AnimatePresence mode="wait">
-              {inputMode === "url" ? (
-                <motion.div
-                  key="url-panel"
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  transition={{ duration: 0.2 }}
-                  className="space-y-4"
-                >
+            <div className="space-y-5">
+              {/* ---- URL / video link section ---- */}
+              <motion.section
+                aria-label="URL or video link input"
+                animate={{ opacity: activeMode === "text" ? 0.45 : 1 }}
+                transition={{ duration: 0.25 }}
+                className={cn(
+                  "space-y-4 rounded-xl border p-4 transition-colors",
+                  activeMode === "link" ? "border-cyan-500/60 ring-1 ring-cyan-500/40" : "border-border/60"
+                )}
+              >
                   <div>
-                    <Label htmlFor="article-url" className="mb-2 block">Article URL</Label>
+                    <Label htmlFor="article-url" className="mb-2 flex items-center gap-2">
+                      Article / Video URL
+                      {urlIsVideo && (
+                        <Badge variant="info" className="border-cyan-500/40 bg-cyan-500/10 text-cyan-300">
+                          Video link detected
+                        </Badge>
+                      )}
+                    </Label>
                     <div className="flex gap-2">
                       <Input
                         id="article-url"
                         value={urlInput}
                         onChange={(e) => setUrlInput(e.target.value)}
-                        placeholder="https://example.com/news/article"
+                        placeholder="https://example.com/news/article — or YouTube / Vimeo link"
                         type="url"
+                        disabled={activeMode === "text"}
                         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleFetchUrl(); } }}
                       />
-                      <Button type="button" onClick={handleFetchUrl} disabled={urlLoading || !urlInput.trim()} className="shrink-0">
+                      <Button type="button" onClick={handleFetchUrl} disabled={urlLoading || !urlInput.trim() || activeMode === "text"} className="shrink-0" title="Fetch text to preview (optional)">
                         {urlLoading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Globe className="h-4 w-4" aria-hidden="true" />}
                         <span className="hidden sm:inline">{urlLoading ? "Fetching…" : "Fetch"}</span>
                       </Button>
                     </div>
                     <p className="mt-2 text-xs text-muted-foreground">
-                      Paste a news article URL. The system will fetch and extract the article content automatically.
+                      Paste a news URL <em>or</em> a video link (YouTube, Vimeo, TikTok…). Video pages go to the same endpoint — titles, descriptions & captions are extracted automatically.
                     </p>
                   </div>
 
@@ -289,36 +396,71 @@ export default function NewsDetector() {
                     <p className="flex items-start gap-1.5 text-xs text-cyan-300">
                       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                       <span>
-                        <strong className="font-semibold">Server-side fetching:</strong> URLs are fetched through our backend to bypass browser CORS restrictions. Extraction works best with standard news article pages.
+                        <strong className="font-semibold">Server-side fetching:</strong> URLs are fetched through our backend to bypass browser CORS restrictions. Video extraction works best when captions/descriptions are public.
                       </span>
                     </p>
                   </div>
 
-                  <div className="rounded-lg border border-dashed border-violet-500/40 bg-violet-500/5 p-3">
-                    <p className="flex items-center gap-1.5 text-xs font-semibold text-violet-300">
-                      <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-                      DEMO EXAMPLES
-                      <span className="font-normal text-muted-foreground">— loaded text runs through the real ML pipeline</span>
-                    </p>
-                    <div className="mt-2.5 flex flex-wrap gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => loadExample("fake")} disabled={loading || urlLoading}>
-                        Load Example News (fake)
-                      </Button>
-                      <Button type="button" size="sm" variant="outline" onClick={() => loadExample("real")} disabled={loading || urlLoading}>
-                        Load Example News (real)
-                      </Button>
-                    </div>
+                  <div className="flex flex-wrap items-center gap-2.5 border-t border-border/60 pt-4">
+                    <Button type="button" onClick={handleAnalyzeUrl} disabled={!canAnalyzeUrl} className="min-w-[150px]">
+                      <Globe className="h-4 w-4" aria-hidden="true" />
+                      {loading && activeMode === "link" ? "Analyzing…" : urlIsVideo ? "Analyze Video" : "Analyze URL"}
+                    </Button>
+                    <span className="text-[11px] text-muted-foreground">
+                      {!urlFilled ? "Enter a valid http(s) URL to enable." : "Fetches + analyzes in one step — no headline needed."}
+                    </span>
                   </div>
-                </motion.div>
-              ) : (
-                <motion.div
-                  key="paste-panel"
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 20 }}
-                  transition={{ duration: 0.2 }}
-                  className="space-y-5"
-                >
+
+                  <AnimatePresence>
+                    {fallbackHint && (
+                      <motion.div
+                        key="paste-fallback"
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                        transition={{ duration: 0.25 }}
+                        role="alert"
+                        className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-[13px] leading-relaxed text-amber-200"
+                      >
+                        <p className="flex items-start gap-1.5">
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                          <span>
+                            <strong className="font-semibold">Couldn’t read this page automatically.</strong>{" "}
+                            {fallbackHint}
+                          </span>
+                        </p>
+                        <p className="mt-2 text-amber-200/90">
+                          How to continue: open the URL in your browser, copy the headline + 2–3 paragraphs into the text section below, then press{" "}
+                          <strong className="font-semibold">“Analyze Article”</strong>. Your link is kept as Source URL.
+                        </p>
+                        <div className="mt-2.5">
+                          <Button type="button" size="sm" variant="outline" onClick={() => setUrlInput("")}>
+                            <Eraser className="h-3.5 w-3.5" aria-hidden="true" />
+                            Clear URL to unlock text fields
+                          </Button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+              </motion.section>
+
+              {/* ---- OR divider ---- */}
+              <div className="flex items-center gap-3" aria-hidden="true">
+                <span className="h-px flex-1 bg-border/60" />
+                <span className="rounded-full border border-border/60 bg-muted/40 px-3 py-0.5 text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">or</span>
+                <span className="h-px flex-1 bg-border/60" />
+              </div>
+
+              {/* ---- Headline + article text section ---- */}
+              <motion.section
+                aria-label="Headline and article text input"
+                animate={{ opacity: activeMode === "link" ? 0.45 : 1 }}
+                transition={{ duration: 0.25 }}
+                className={cn(
+                  "space-y-5 rounded-xl border p-4 transition-colors",
+                  activeMode === "text" ? "border-emerald-500/60 ring-1 ring-emerald-500/40" : "border-border/60"
+                )}
+              >
                   <div>
                     <div className="mb-2 flex items-center justify-between">
                       <Label htmlFor="headline">Headline</Label>
@@ -332,6 +474,7 @@ export default function NewsDetector() {
                       maxLength={MAX_HEADLINE}
                       onChange={(e) => setHeadline(e.target.value)}
                       placeholder="Paste the article headline…"
+                      disabled={activeMode === "link"}
                     />
                   </div>
 
@@ -351,6 +494,7 @@ export default function NewsDetector() {
                       placeholder="Paste the full article text here…"
                       className="resize-y"
                       aria-describedby="news-char-counter"
+                      disabled={activeMode === "link"}
                     />
                     <p id="news-char-counter" className="mt-1.5 text-[11px] text-muted-foreground">
                       Total: {totalChars} characters {totalChars < 20 && "· minimum 20 required"}
@@ -367,18 +511,22 @@ export default function NewsDetector() {
                       onChange={(e) => setSourceUrl(e.target.value)}
                       placeholder="https://…"
                       type="url"
+                      disabled={activeMode === "link"}
                     />
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2.5 border-t border-border/60 pt-4">
-                    <Button type="button" onClick={handleAnalyze} disabled={!canSubmit} className="min-w-[150px]">
+                    <Button type="button" onClick={handleAnalyze} disabled={!canSubmit} className="min-w-[150px]" title="Analyze typed headline + article (text mode)">
                       <Gauge className="h-4 w-4" aria-hidden="true" />
-                      {loading ? "Analyzing…" : "Analyze Article"}
+                      {loading && activeMode === "text" ? "Analyzing…" : "Analyze Article"}
                     </Button>
                     <Button type="button" variant="outline" onClick={handleClear} disabled={loading || urlLoading}>
                       <Eraser className="h-4 w-4" aria-hidden="true" />
                       Clear
                     </Button>
+                    <span className="text-[11px] text-muted-foreground">
+                      {!textFilled ? "Type ≥ 20 characters to enable." : "Headline + article ready — no URL needed."}
+                    </span>
                   </div>
 
                   <div className="rounded-lg border border-dashed border-violet-500/40 bg-violet-500/5 p-3">
@@ -390,17 +538,16 @@ export default function NewsDetector() {
                       </span>
                     </p>
                     <div className="mt-2.5 flex flex-wrap gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => loadExample("fake")} disabled={loading || urlLoading}>
+                      <Button type="button" size="sm" variant="outline" onClick={() => loadExample("fake")} disabled={loading || urlLoading || activeMode === "link"}>
                         Load Example News (fake)
                       </Button>
-                      <Button type="button" size="sm" variant="outline" onClick={() => loadExample("real")} disabled={loading || urlLoading}>
+                      <Button type="button" size="sm" variant="outline" onClick={() => loadExample("real")} disabled={loading || urlLoading || activeMode === "link"}>
                         Load Example News (real)
                       </Button>
                     </div>
                   </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+              </motion.section>
+            </div>
           </CardContent>
         </Card>
 
@@ -422,9 +569,9 @@ export default function NewsDetector() {
               </div>
               <h3 className="font-display text-base font-semibold">AI analysis result</h3>
               <p className="mt-1.5 max-w-sm text-sm text-muted-foreground">
-                {inputMode === "url"
-                  ? "Paste a news article URL and click Fetch. After the content is extracted, review it and press Analyze."
-                  : "Paste an article and press Analyze Article. The classifier (TF-IDF + Logistic Regression) will estimate whether the text looks real or potentially misinformative."}
+                {activeMode === "link"
+                  ? "Video / URL detected. Press “Analyze URL” — the backend fetches titles, descriptions & captions and runs the same AI classifier."
+                  : "Paste an article and press Analyze Article, or paste a URL / video link and press Analyze URL. Groq estimates whether the text looks real or potentially misinformative."}
               </p>
               <Button variant="ghost" size="sm" className="mt-4" onClick={() => loadExample("fake")}>
                 <RotateCcw className="h-4 w-4" aria-hidden="true" />

@@ -1,11 +1,10 @@
-"""Review authenticity detection service (real ML inference + explainability)."""
+"""Review authenticity detection service (Groq only)."""
 from __future__ import annotations
 
-import time
 from typing import Optional
 
-from ..ml.model_loader import get_review_model
 from . import explainability as ex
+from . import groq as om
 
 
 def analyze_review(
@@ -14,39 +13,30 @@ def analyze_review(
     rating: Optional[int] = None,
     verified_purchase: Optional[bool] = None,
 ) -> dict:
-    """Run the full review analysis pipeline and return a serialisable result."""
+    """Run Groq review analysis; keep local text stats as context."""
     text = review_text.strip()
     stats = ex.text_statistics(text)
-
-    model = get_review_model()
-    started = time.perf_counter()
-    prediction, confidence = model.predict(text)
-    elapsed_ms = max(1, int((time.perf_counter() - started) * 1000))
-
-    try:
-        top_terms = model.top_terms(text, k=5)
-    except Exception:  # explainability must never break prediction
-        top_terms = []
-
+    res = om.analyze_review(text, product_name, rating, verified_purchase)
     signals = ex.review_signals(
-        review_text=text,
-        prediction=prediction,
-        confidence=confidence,
-        stats=stats,
-        rating=rating,
-        verified_purchase=verified_purchase,
+        review_text=text, prediction=res["prediction"], confidence=res["confidence"],
+        stats=stats, rating=rating, verified_purchase=verified_purchase,
         product_name=product_name,
-        top_terms=top_terms,
+        groq_flags=res.get("flags", []),
+        groq_explanation=res.get("explanation", ""),
+        groq_indicators=res.get("authenticity_indicators", []),
     )
-    sentiment = ex.analyze_sentiment(text)
-
     return {
-        "prediction": prediction,
-        "confidence": round(confidence, 4),
-        "model": model.MODEL_NAME,
-        "processing_time_ms": elapsed_ms,
+        "prediction": res["prediction"],
+        "confidence": res["confidence"],
+        "credibility_score": res["credibility_score"],
+        "bias_level": res["bias_level"],
+        "explanation": res["explanation"],
+        "authenticity_indicators": res["authenticity_indicators"],
+        "model": res["model"],
+        "processing_time_ms": res["processing_time_ms"],
         "signals": signals,
         "text_stats": stats,
         "word_count": stats["word_count"],
-        "sentiment": sentiment["label"],
+        "sentiment": res["sentiment"],
     }
+

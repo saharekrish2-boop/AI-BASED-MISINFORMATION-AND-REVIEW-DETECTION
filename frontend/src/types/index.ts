@@ -27,6 +27,9 @@ export interface NewsAnalysisResult {
   id: number;
   prediction: "real" | "misinformative";
   confidence: number;
+  credibility_score?: number | null;
+  bias_level?: string | null;
+  explanation?: string | null;
   model: string;
   processing_time_ms: number;
   signals: Signal[];
@@ -43,6 +46,10 @@ export interface ReviewAnalysisResult {
   id: number;
   prediction: "genuine" | "suspicious";
   confidence: number;
+  credibility_score?: number | null;
+  bias_level?: string | null;
+  explanation?: string | null;
+  authenticity_indicators?: string[] | null;
   model: string;
   processing_time_ms: number;
   signals: Signal[];
@@ -53,6 +60,24 @@ export interface ReviewAnalysisResult {
   product_name: string | null;
   rating: number | null;
   verified_purchase: boolean | null;
+  sentiment: Sentiment;
+}
+
+export interface GeneralAnalysisResult {
+  id: number;
+  prediction: "credible" | "questionable" | "misleading";
+  confidence: number;
+  credibility_score: number;
+  bias_level: string;
+  explanation?: string | null;
+  model: string;
+  processing_time_ms: number;
+  signals: Signal[];
+  text_stats: TextStats;
+  timestamp: string;
+  word_count: number;
+  disclaimer: string;
+  content_type: string;
   sentiment: Sentiment;
 }
 
@@ -140,7 +165,7 @@ export interface Analytics {
 }
 
 export interface ModelInfo {
-  key: "news" | "reviews";
+  key: "news" | "reviews" | "general";
   name: string;
   algorithm: string;
   vectorizer: string;

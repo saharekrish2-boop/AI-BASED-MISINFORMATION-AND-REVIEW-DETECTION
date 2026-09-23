@@ -1,13 +1,30 @@
 """TruthLens AI - application configuration.
 
 All values can be overridden through environment variables so the same
-codebase works for local development and deployment without paid APIs.
+codebase works for local development and deployment.
+
+Analysis is routed exclusively through Groq (OpenAI-compatible
+Chat Completions). No local TF-IDF / scikit-learn models are used.
 """
 import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent          # .../backend
 PROJECT_ROOT = BASE_DIR.parent                      # repository root
+
+# ---------------------------------------------------------------------------
+# Secure environment loading: read backend/.env (git-ignored) via python-dotenv.
+# Real process environment variables always win (override=False). The file is
+# optional - deployment can inject vars purely through the process env.
+# ---------------------------------------------------------------------------
+try:
+    from dotenv import load_dotenv as _load_dotenv
+except ImportError:  # pragma: no cover - dotenv is a declared dependency
+    _load_dotenv = None
+
+_ENV_FILE = BASE_DIR / ".env"
+if _load_dotenv is not None and _ENV_FILE.is_file():
+    _load_dotenv(_ENV_FILE, override=False)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -26,10 +43,18 @@ DATABASE_URL = os.getenv(
 MODELS_DIR = Path(os.getenv("TRUTHLENS_MODELS_DIR", str(BASE_DIR / "ml" / "models")))
 ML_DATA_DIR = BASE_DIR / "ml" / "data"
 
-# Optional override paths for real datasets (CSV with `label,text` columns).
-# When provided they take priority over the built-in demo datasets.
-NEWS_DATA_PATH = os.getenv("TRUTHLENS_NEWS_DATA", "")
-REVIEW_DATA_PATH = os.getenv("TRUTHLENS_REVIEWS_DATA", "")
+# ---------------------------------------------------------------------------
+# Groq - the ONLY analysis engine (OpenAI-compatible Chat Completions)
+# ---------------------------------------------------------------------------
+# Provide the key via environment (never hardcode):
+#   GROQ_API_KEY=gsk_...
+#   GROQ_BASE_URL=https://api.groq.com/openai/v1   (default)
+#   GROQ_MODEL=openai/gpt-oss-120b                (default)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
+GROQ_TIMEOUT_SECONDS = float(os.getenv("GROQ_TIMEOUT_SECONDS", "30"))
+GROQ_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "800"))
 
 # ---------------------------------------------------------------------------
 # CORS - only trusted frontend origins may call the API
@@ -57,6 +82,8 @@ MAX_CONTENT_LENGTH = 20000
 MAX_REVIEW_LENGTH = 10000
 MIN_NEWS_LENGTH = 20
 MIN_REVIEW_LENGTH = 10
+MAX_GENERAL_LENGTH = 20000
+MIN_GENERAL_LENGTH = 10
 
 # ---------------------------------------------------------------------------
 # Server-side URL fetching (SSRF / DoS hardening, see README "Security Notes")
@@ -82,12 +109,8 @@ API_KEY_MIN_LENGTH = 16          # shorter keys trigger a startup warning
 PROTECT_FETCH_URL = _env_bool("TRUTHLENS_PROTECT_FETCH_URL", False)
 
 APP_NAME = "TruthLens AI"
-VERSION = "1.0.0"
-
-NEWS_MODEL_PATH = MODELS_DIR / "news_model.joblib"
-REVIEW_MODEL_PATH = MODELS_DIR / "review_model.joblib"
-NEWS_METRICS_PATH = MODELS_DIR / "news_metrics.json"
-REVIEW_METRICS_PATH = MODELS_DIR / "review_metrics.json"
+VERSION = "2.0.0"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
+

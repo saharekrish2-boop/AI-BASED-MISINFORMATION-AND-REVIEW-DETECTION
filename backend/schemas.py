@@ -79,7 +79,26 @@ class ReviewAnalyzeRequest(BaseModel):
 
 
 class TrainRequest(BaseModel):
-    model: Literal["all", "news", "reviews"] = "all"
+    model: Literal["all", "news", "reviews", "general"] = "all"
+
+
+class GeneralAnalyzeRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=config.MAX_GENERAL_LENGTH)
+    content_type: Literal["post", "blog", "description", "article"] = "post"
+
+    @field_validator("content", mode="after")
+    @classmethod
+    def _clean(cls, v):
+        return sanitize_text(v) if v else v
+
+    @model_validator(mode="after")
+    def _validate_lengths(self):
+        if len(self.content) < config.MIN_GENERAL_LENGTH:
+            raise ValueError(
+                f"Please enter at least {config.MIN_GENERAL_LENGTH} characters "
+                "of content to analyse."
+            )
+        return self
 
 
 class NewsFetchUrlRequest(BaseModel):
@@ -104,6 +123,9 @@ class BaseAnalysisResponse(BaseModel):
     id: int
     prediction: str
     confidence: float
+    credibility_score: Optional[float] = None
+    bias_level: Optional[str] = None
+    explanation: Optional[str] = None
     model: str
     processing_time_ms: int
     signals: list[Signal]
@@ -123,6 +145,12 @@ class ReviewAnalysisResponse(BaseAnalysisResponse):
     product_name: Optional[str] = None
     rating: Optional[int] = None
     verified_purchase: Optional[bool] = None
+    authenticity_indicators: Optional[list[str]] = None
+    sentiment: str
+
+
+class GeneralAnalysisResponse(BaseAnalysisResponse):
+    content_type: str = "post"
     sentiment: str
 
 
@@ -166,6 +194,7 @@ class StatsResponse(BaseModel):
     total_analyses: int
     news_count: int
     review_count: int
+    general_count: int = 0
     suspicious_count: int
     misinformative_count: int
     fake_review_count: int

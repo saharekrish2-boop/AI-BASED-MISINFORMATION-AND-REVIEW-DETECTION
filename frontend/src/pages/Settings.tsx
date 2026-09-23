@@ -94,9 +94,9 @@ export default function Settings() {
         <div className="grid gap-3 lg:grid-cols-2">
           <StatusRow ok={health?.database ?? false} label="Database" detail={`SQLite${health ? ` · v${health.version}` : ""}`} />
           <StatusRow ok={health !== null} label="API" detail={health ? `FastAPI v${health.version}` : "Backend unreachable"} />
-          <StatusRow ok={health?.news_model ?? false} label="News model" detail="joblib artifact" />
-          <StatusRow ok={health?.review_model ?? false} label="Review model" detail="joblib artifact" />
-          <StatusRow ok={health?.analysis_engine ?? false} label="Analysis engine" detail="preprocessing + classification + explainability" />
+          <StatusRow ok={health?.news_model ?? false} label="News analysis" detail="Groq engine" />
+          <StatusRow ok={health?.review_model ?? false} label="Review analysis" detail="Groq engine" />
+          <StatusRow ok={health?.analysis_engine ?? false} label="Analysis engine" detail="Groq + local text statistics" />
           <StatusRow ok={health ? health.status === "ok" : false} label="Overall status" detail={health ? (health.status === "ok" ? "All systems nominal" : "Degraded") : "Unknown"} />
         </div>
         {health && (
@@ -176,16 +176,16 @@ export default function Settings() {
       <section className="rounded-xl border border-border/70 bg-card/70 p-5" aria-label="About">
         <h2 className="font-display text-base font-semibold">About TruthLens AI</h2>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-          TruthLens AI is an on-device misinformation and review detection system. Text is
-          vectorised with TF-IDF and classified by logistic regression models trained with
-          scikit-learn. Explainable signals are derived from measurable text features —
-          the system is a probabilistic classifier, not a truth-verification engine.
+          TruthLens AI routes every analysis through the Groq API. Text
+          statistics are measured locally and the verdict — prediction,
+          confidence, credibility, bias level, flags — comes back as concise,
+          structured JSON. The system is probabilistic, not a truth-verification engine.
         </p>
         <ul className="mt-4 grid gap-2 text-sm text-muted-foreground lg:grid-cols-2">
           {[
             { icon: Server, text: "Backend: FastAPI + Uvicorn" },
             { icon: Database, text: "Storage: SQLAlchemy + SQLite" },
-            { icon: Cpu, text: "ML: scikit-learn TF-IDF + Logistic Regression" },
+            { icon: Cpu, text: "Engine: Groq API (remote LLM, structured JSON)" },
             { icon: BrainCircuit, text: "Predictions are probabilistic; disclaimer is shown with every result" },
           ].map((item) => (
             <li key={item.text} className="flex items-center gap-2.5 rounded-lg border border-border/50 bg-muted/30 px-3 py-2.5">

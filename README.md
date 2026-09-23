@@ -2,16 +2,16 @@
 
 **AI-based Misinformation and Review Detection System**
 
-A full-stack web application that analyzes news/articles (`REAL` vs `POTENTIALLY MISINFORMATIVE`) and customer reviews (`GENUINE` vs `SUSPICIOUS`) using real, locally-trained machine-learning models.
+A full-stack web application that analyzes news/articles (`REAL` vs `POTENTIALLY MISINFORMATIVE`), customer reviews (`GENUINE` vs `SUSPICIOUS`), and general content (posts/blogs/descriptions: `CREDIBLE` vs `QUESTIONABLE` vs `MISLEADING`) using the Groq API. All analysis is routed through Groq only — no local TF-IDF or scikit-learn models.
 
 ## Features
 
-- **News Detector** — TF-IDF + Logistic Regression classifier with explainable signals (clickbait structure, sensational language, heavy capitalisation, sourcing language…).
-- **Review Detector** — detects suspicious/fake review patterns: promotional language, generic praise, repetitive phrasing, rating/sentiment mismatch…
-- **Explainability** — every verdict includes *Potential signals detected*, derived from actual measured text features and model weights (never random).
-- **Dashboard, History, Analytics, Model Center** — all statistics and charts are computed from SQLite records; nothing is hardcoded or random.
-- **Model Management** — retrain via UI (`POST /api/models/train`) or CLI. Ships with clearly-labelled **demo training datasets** so the app runs immediately out of the box.
-- **Privacy / cost** — runs fully offline; no paid APIs.
+- **News Analysis** — raw headlines/articles analysed for misinformation, bias, or manipulation patterns, with confidence score + short explanation.
+- **Review Analysis** — spammy, bot-generated, or sentiment-manipulated reviews flagged, with authenticity indicators.
+- **General Content Analysis** — social posts, blogs, product descriptions evaluated for credibility, tone, and misinformation signals; structured JSON (`credibility_score`, `bias_level`, `flags`).
+- **Explainability** — every verdict includes *Potential signals detected*, derived from measured text features plus the Groq flags/explanation (never random).
+- **Dashboard, History, Analytics, Model Center** — all statistics and charts are computed from SQLite records stored as separate log/database entries (existing files are never overwritten).
+- **Concise, structured, machine-readable responses** for downstream processing.
 
 ## Project structure
 
@@ -22,17 +22,11 @@ A full-stack web application that analyzes news/articles (`REAL` vs `POTENTIALLY
 │   ├── models.py                # ORM table `analyses`
 │   ├── schemas.py               # Pydantic request/response schemas + sanitisation
 │   ├── config.py                # env-configurable settings
-│   ├── ml/
-│   │   ├── preprocessing.py     # text normalisation + TF-IDF builder
-│   │   ├── news_model.py        # news classifier wrapper (sklearn pipeline)
-│   │   ├── review_model.py      # review classifier wrapper
-│   │   ├── model_loader.py      # thread-safe artifact loading
-│   │   ├── train_news.py        # training pipeline (print metrics, save joblib)
-│   │   ├── train_reviews.py
-│   │   └── data/                # DEMO datasets + README explaining real data
 │   ├── services/
-│   │   ├── news_detector.py     # inference + signal generation
-│   │   ├── review_detector.py
+│   │   ├── groq.py         # Groq API client (ONLY analysis engine)
+│   │   ├── news_detector.py     # Groq news analysis + signal generation
+│   │   ├── review_detector.py   # Groq review analysis + signal generation
+│   │   ├── general_detector.py  # Groq general-content analysis
 │   │   └── explainability.py    # text features, sentiment, signals
 │   └── data/                    # SQLite database lives here (runtime)
 ├── ml/                          # thin wrappers so `python ml/train_*.py` works
@@ -64,22 +58,28 @@ cd frontend
 npm install
 ```
 
-## 2. Train the models (optional — pre-trained demo models included)
+## 2. Configure Groq (required for analysis)
 
-Demo datasets are generated automatically the first time training runs; no downloads needed.
+All analysis is routed through the Groq API (`POST {base}/chat/completions`
+with `Authorization: Bearer <GROQ_API_KEY>`). No local `.joblib` models or
+scikit-learn classifiers are loaded or referenced.
 
 ```bash
-python ml/train_news.py
-python ml/train_reviews.py
+# Option A - git-ignored file (recommended). backend/config.py auto-loads it:
+#   backend/.env  ->  GROQ_API_KEY=<your-groq-key>
+# (copy backend/.env.example; never commit backend/.env)
+
+# Option B - process environment (overrides anything in backend/.env):
+# bash / PowerShell: set the key (never commit it)
+export GROQ_API_KEY="<your-groq-key>"
+# optional overrides (defaults shown):
+export GROQ_BASE_URL="https://api.groq.com/openai/v1"
+export GROQ_MODEL="cc/claude-opus-4-6"
 ```
 
-Each script prints `Accuracy / Precision / Recall / F1 / Confusion Matrix` and saves:
-
-- `backend/ml/models/news_model.joblib`
-- `backend/ml/models/review_model.joblib`
-- plus matching `*_metrics.json`
-
-Models trained on the bundled generated datasets are labelled **Demo-trained model** in the UI — the accuracy figures are illustrative, not production-grade. To train on a real dataset, set `TRUTHLENS_NEWS_DATA` / `TRUTHLENS_REVIEWS_DATA` to CSV files with `label,text` columns (labels: `real|misinformative` for news, `genuine|suspicious` for reviews). See `backend/ml/data/README.md`.
+The key is attached to every Groq call as `Authorization: Bearer <key>`
+and is never logged. Without `GROQ_API_KEY`, analysis endpoints return
+HTTP 503 and `GET /api/health` reports `degraded` until it is configured.
 
 ## 3. Start the backend
 
@@ -113,9 +113,10 @@ Open http://localhost:5173
 | POST   | `/api/news/analyze`    | News analysis (public) |
 | POST   | `/api/news/fetch-url`  | Fetch + extract a public article URL (SSRF-hardened, rate-limited; 🔒 only with `TRUTHLENS_PROTECT_FETCH_URL=true`) |
 | POST   | `/api/reviews/analyze` | Review analysis (public) |
+| POST   | `/api/content/analyze` | General content analysis: posts/blogs/descriptions (public) |
 | GET    | `/api/analytics`       | Chart data (live from DB) |
-| GET    | `/api/models/info`     | Model metadata + metrics |
-| POST   | `/api/models/train`    | Retrain models (scikit-learn fitting) (**🔒 API key required**) |
+| GET    | `/api/models/info`     | Groq engine metadata |
+| POST   | `/api/models/train`    | Deprecated — always 410 (local training removed; Groq-only) |
 
 🔒 **Protected endpoints** need the shared API key in the `X-API-Key` header (or
 `Authorization: Bearer <key>`); requests without it get **401 Unauthorized**. See
@@ -146,17 +147,20 @@ curl -X POST http://127.0.0.1:8000/api/reviews/analyze \
   }'
 ```
 
-### Example response
+### Example response (news)
 
 ```json
 {
   "id": 3,
-  "prediction": "suspicious",
-  "confidence": 0.96,
-  "model": "TF-IDF + Logistic Regression",
-  "processing_time_ms": 12,
-  "signals": [ { "id": "promotional-language", "title": "Excessive promotional language",
-                  "description": "Marketing-style phrases found (best ever, buy it now)…",
+  "prediction": "misinformative",
+  "confidence": 0.91,
+  "credibility_score": 0.22,
+  "bias_level": "high",
+  "explanation": "Sensational cure claim with no sourcing.",
+  "model": "Groq/cc/claude-opus-4-6",
+  "processing_time_ms": 812,
+  "signals": [ { "id": "groq-1", "title": "Groq: Sensational claim",
+                  "description": "Miracle-cure framing with no evidence…",
                   "severity": "high" } ],
   "text_stats": { "word_count": 22, "exclamation_count": 3, "all_caps_ratio": 0.28 },
   "timestamp": "2026-09-06T10:00:00Z",
@@ -164,19 +168,35 @@ curl -X POST http://127.0.0.1:8000/api/reviews/analyze \
   "disclaimer": "AI predictions are probabilistic and should not be treated as definitive proof of truthfulness or fraud."
 }
 ```
-## Retraining from the UI
 
-Open the **Model Information** page and click *Train / Update Model*. The backend performs a real scikit-learn fit, reloads the artifacts, and returns the evaluation metrics — this also works via `POST /api/models/train`. Retraining is a **protected** action: store the API key in **Settings → API key** (or set `VITE_API_KEY`) first, otherwise the backend answers `401`.
+### Example request — general content
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/content/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "This miracle drink cures everything overnight - doctors hate it!",
+    "content_type": "post"
+  }'
+```
+Returns `{ prediction, confidence, credibility_score, bias_level, sentiment, explanation, flags, ... }`.
+## Engine info (Model Center)
+
+The **Model Center** page shows Groq engine metadata (`GET /api/models/info`).
+`POST /api/models/train` is deprecated and always returns HTTP 410 — local training
+was removed; all analysis routes through Groq only.
 
 ## Configuration (environment variables)
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `VITE_API_URL` (frontend) | `http://127.0.0.1:8000` | Backend URL |
+| `GROQ_API_KEY` | *(empty → analysis returns 503)* | Groq API key — required for all analysis. Never commit it |
+| `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq router base URL |
+| `GROQ_MODEL` | `cc/claude-opus-4-6` | Groq model id |
+| `GROQ_TIMEOUT_SECONDS` | `30` | Groq request timeout |
+| `GROQ_MAX_TOKENS` | `800` | Max tokens for Groq verdict JSON |
 | `TRUTHLENS_DATABASE_URL` | `sqlite:///backend/data/truthlens.db` | Database URL |
-| `TRUTHLENS_MODELS_DIR` | `backend/ml/models` | Model artifact folder |
-| `TRUTHLENS_NEWS_DATA` | *(empty → demo data)* | Path to a real news CSV |
-| `TRUTHLENS_REVIEWS_DATA` | *(empty → demo data)* | Path to a real reviews CSV |
 | `TRUTHLENS_API_KEY` | *(empty → protected routes return 503)* | Shared API key for sensitive endpoints. Generate: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `TRUTHLENS_PROTECT_FETCH_URL` | `false` | Also require the API key for `POST /api/news/fetch-url` |
 | `TRUTHLENS_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173,https://truthlens.ai` | Comma-separated CORS allow-list (a whitelist — `*` is not used) |
@@ -199,9 +219,8 @@ read endpoints stay public so the demo works out of the box.
 |---|---|---|
 | `DELETE /api/history` | **Yes** | Wipes every analysis record |
 | `DELETE /api/history/{id}` | **Yes** | Deletes a record |
-| `POST /api/models/train` | **Yes** | CPU-heavy scikit-learn retraining |
 | `POST /api/news/fetch-url` | Only with `TRUTHLENS_PROTECT_FETCH_URL=true` | Outbound request (already SSRF-hardened + rate-limited) |
-| `POST /api/news/analyze`, `POST /api/reviews/analyze`, all `GET` endpoints | No | Public analysis & read access |
+| `POST /api/news/analyze`, `POST /api/reviews/analyze`, `POST /api/content/analyze`, all `GET` endpoints | No | Public analysis & read access |
 
 **1. Generate and set the key** (never commit it):
 
@@ -219,14 +238,18 @@ set TRUTHLENS_API_KEY=<paste-the-generated-key>
 uvicorn backend.main:app --reload --port 8000
 ```
 
-Or keep the secret in a **git-ignored file** and let uvicorn load it (`python-dotenv`
-is already installed as part of `uvicorn[standard]`):
+Or keep the secret in a **git-ignored file** — `backend/config.py` auto-loads
+`backend/.env` via `python-dotenv` (a declared dependency; also shipped with
+`uvicorn[standard]`), so a plain start works too:
 
 ```bash
 # backend/.env   <- git-ignored by the root .gitignore - never commit it
+# (template: backend/.env.example)
 TRUTHLENS_API_KEY=<paste-the-generated-key>
+GROQ_API_KEY=<paste-the-groq-key>
 
-uvicorn backend.main:app --reload --port 8000 --env-file backend/.env
+uvicorn backend.main:app --reload --port 8000
+# equivalent: uvicorn backend.main:app --reload --port 8000 --env-file backend/.env
 ```
 
 The key is read **once at import time**, so restart the backend after changing it.
@@ -243,12 +266,6 @@ allowing anyone to delete data. A key shorter than 16 characters triggers a warn
 # Clear all history (preferred: X-API-Key header)
 curl -X DELETE http://127.0.0.1:8000/api/history \
   -H "X-API-Key: $TRUTHLENS_API_KEY"
-
-# Retrain (Bearer style is accepted too)
-curl -X POST http://127.0.0.1:8000/api/models/train \
-  -H "Authorization: Bearer $TRUTHLENS_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"all"}'
 ```
 
 Responses:
@@ -260,15 +277,15 @@ Responses:
 | Valid key | 200 | Normal endpoint response |
 
 The check is performed twice on purpose: an `api_key_guard` middleware keyed on the
-method + path (so any future route added under `/api/history` or
-`/api/models/train` is protected automatically) **and** an explicit
+method + path (so any future route added under `/api/history` is protected
+automatically) **and** an explicit
 `Depends(require_api_key)` in each protected endpoint signature. Comparisons use
 `secrets.compare_digest` (constant time). CORS preflight (`OPTIONS`) is never
 blocked, because browsers do not attach credentials to preflight requests.
 
 **3. Frontend:** paste the key in **Settings → API key** (kept in the browser's
 `localStorage`) or provide it at build time with `VITE_API_KEY`. The client sends
-it as `X-API-Key` on every request; the Settings and Model Information pages show
+it as `X-API-Key` on every request; the Settings page shows
 the backend's 401/503 explanation if it is missing or wrong.
 
 > ⚠️ `VITE_*` values are compiled into the JavaScript bundle, so a key set that way is
@@ -314,7 +331,7 @@ which enforces:
 **Residual risk:** DNS is resolved once for validation and again by the HTTP
 client, so a hostile resolver could rebind between the two lookups (classic
 TOCTOU). Run the backend behind an egress-restricted proxy/firewall if you must
-defend against that; fetched text is only ever analysed locally and never
+defend against that; fetched text is analysed via Groq and never
 executed.
 
 ### Tests
@@ -336,12 +353,12 @@ limiter returns 429 + `Retry-After`.
 used for every write, so the development database is never affected:
 
 - unauthenticated `DELETE /api/history` → **401** and *nothing is deleted* (the
-  guard runs before the handler), same for `DELETE /api/history/{id}` and
-  `POST /api/models/train` (asserts training is never started);
+  guard runs before the handler), same for `DELETE /api/history/{id}`;
+- `POST /api/models/train` → **410** always (local training removed; Groq-only);
 - wrong, empty, whitespace, malformed or off-by-one keys → 401; an unconfigured
   server → 503 (fail closed);
 - a valid `X-API-Key` (and `Authorization: Bearer …`) → 200, records actually
-  deleted / retraining invoked, artifacts reloaded;
+  deleted;
 - public endpoints (`/api/health`, `/api/stats`, `/api/history`, `/api/analytics`,
   `/api/models/info`, `POST /api/news/analyze`) still answer 200 without a key;
 - CORS: preflight and simple requests from `http://localhost:5173` and
@@ -351,11 +368,10 @@ used for every write, so the development database is never affected:
 
 ## Known limitations
 
-- Models ship **demo-trained** with small template-generated datasets; accuracy is illustrative, not production-grade. Provide a real dataset and retrain for production use.
-- The classifier is a **text-style classifier** — it detects language *associated with* misinformation/suspicion, it cannot verify facts, sources, or ground truth.
+- Analysis requires `GROQ_API_KEY`; without it the API answers 503.
+- Groq verdicts are probabilistic — they detect language *associated with* misinformation/suspicion, they cannot verify facts, sources, or ground truth.
 - Analysis is English-oriented (sentiment lexicons are English).
-- Sentiment is a lightweight lexicon-based approach (no BERT/transformer dependency) — built this way for offline/CPU-only operation.
-- Confidence comes from the model's probability output; heuristic rules in `explainability.py` are clearly labelled as potential indicators.
+- Confidence comes from the Groq verdict; heuristic rules in `explainability.py` are clearly labelled as potential indicators.
 
 ## Disclaimer
 

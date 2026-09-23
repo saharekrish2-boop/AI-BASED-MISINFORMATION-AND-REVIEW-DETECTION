@@ -356,9 +356,9 @@ export default function Dashboard() {
             <HealthCard
               index={0}
               icon={Cpu}
-              title="ML Model"
+              title="Analysis Engine"
               ok={(health?.news_model && health?.review_model) ?? false}
-              detail="TF-IDF + Logistic Regression · demo-trained"
+              detail="Groq API · structured JSON"
             />
             <HealthCard
               index={1}
@@ -379,7 +379,7 @@ export default function Dashboard() {
               icon={Zap}
               title="Analysis Engine"
               ok={health?.analysis_engine ?? false}
-              detail="Preprocessing · classification · explainability"
+              detail="Groq verdicts + local text statistics"
             />
           </div>
           {health && (

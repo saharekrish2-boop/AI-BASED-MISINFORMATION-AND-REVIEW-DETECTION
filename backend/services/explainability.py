@@ -2,8 +2,9 @@
 
 Every signal produced here is derived from measurable properties of the
 submitted text: word-bank hits, punctuation statistics, capitalisation
-ratios, repetition checks, sentiment-lexicon analysis, rating/sentiment
-agreement and TF-IDF feature contributions. Nothing is randomised.
+ratios, repetition checks, sentiment-lexicon analysis and rating/sentiment
+agreement, combined with the Groq verdict (prediction, confidence,
+flags, explanation). Nothing is randomised.
 
 The signals are *potential indicators*, not proof (see wording below).
 """
@@ -185,7 +186,8 @@ def news_signals(
     confidence: float,
     stats: dict,
     source_url: Optional[str] = None,
-    top_terms: Optional[list[dict]] = None,
+    groq_flags: Optional[list] = None,
+    groq_explanation: str = "",
 ) -> list[dict]:
     """Build explainable signals for a news analysis from real text features."""
     full = f"{headline}\n{content}".strip() if headline else content
@@ -284,15 +286,23 @@ def news_signals(
             "positive",
         ))
 
-    # 8. TF-IDF contribution (model-derived)
-    if top_terms:
-        terms = ", ".join(t["term"] for t in top_terms[:5])
-        if terms:
+    # 8. Groq verdict (LLM-derived flags + explanation)
+    if groq_flags:
+        for i, flag in enumerate(groq_flags[:5]):
+            if isinstance(flag, dict):
+                title = str(flag.get("title") or f"flag-{i+1}")[:120]
+                desc = str(flag.get("description") or groq_explanation or title)[:500]
+                sev = str(flag.get("severity", "medium")).lower()
+            else:
+                title, desc, sev = str(flag)[:120], groq_explanation or str(flag), "medium"
+            if sev not in ("high", "medium", "low", "positive", "info"):
+                sev = "medium"
             signals.append(_sig(
-                "key-terms", "Most influential terms",
-                f"Model features that most influenced this prediction: {terms}.",
-                "info",
-            ))
+                f"groq-{i+1}", f"Groq: {title}", desc, sev))
+    elif groq_explanation:
+        signals.append(_sig(
+            "groq-verdict", "Groq assessment",
+            groq_explanation[:500], "info"))
 
     # 9. Prediction-aware framing
     if prediction == "misinformative" and confidence < 0.7:
@@ -317,7 +327,9 @@ def review_signals(
     rating: Optional[int] = None,
     verified_purchase: Optional[bool] = None,
     product_name: Optional[str] = None,
-    top_terms: Optional[list[dict]] = None,
+    groq_flags: Optional[list] = None,
+    groq_explanation: str = "",
+    groq_indicators: Optional[list] = None,
 ) -> list[dict]:
     """Build explainable signals for a review analysis from real text features."""
     text = review_text or ""
@@ -473,15 +485,29 @@ def review_signals(
                     "medium",
                 ))
 
-    # 11. TF-IDF contribution (model-derived)
-    if top_terms:
-        terms = ", ".join(t["term"] for t in top_terms[:5])
-        if terms:
+    # 11. Groq verdict (LLM-derived flags, indicators, explanation)
+    if groq_flags:
+        for i, flag in enumerate(groq_flags[:5]):
+            if isinstance(flag, dict):
+                title = str(flag.get("title") or f"flag-{i+1}")[:120]
+                desc = str(flag.get("description") or groq_explanation or title)[:500]
+                sev = str(flag.get("severity", "medium")).lower()
+            else:
+                title, desc, sev = str(flag)[:120], groq_explanation or str(flag), "medium"
+            if sev not in ("high", "medium", "low", "positive", "info"):
+                sev = "medium"
             signals.append(_sig(
-                "key-terms", "Most influential terms",
-                f"Model features that most influenced this prediction: {terms}.",
-                "info",
-            ))
+                f"groq-{i+1}", f"Groq: {title}", desc, sev))
+    elif groq_explanation:
+        signals.append(_sig(
+            "groq-verdict", "Groq assessment",
+            groq_explanation[:500], "info"))
+    if groq_indicators:
+        shown = ", ".join(str(x)[:80] for x in groq_indicators[:4])
+        if shown:
+            signals.append(_sig(
+                "authenticity-indicators", "Authenticity indicators",
+                f"Groq notes: {shown}.", "info"))
 
     # 12. Low-confidence framing
     if confidence < 0.7:
@@ -496,5 +522,66 @@ def review_signals(
     return signals[:8]
 
 
+
+
+
+# ---------------------------------------------------------------------------
+# GENERAL content signals (social posts / blogs / product descriptions)
+# ---------------------------------------------------------------------------
+def general_signals(
+    content: str,
+    prediction: str,
+    confidence: float,
+    stats: dict,
+    groq_flags=None,
+    groq_explanation: str = "",
+) -> list[dict]:
+    """Combine local text features with the Groq verdict."""
+    text = content or ""
+    lower = text.lower()
+    words = re.findall(r"[A-Za-z']+", lower)
+    signals: list[dict] = []
+    sens = sorted({w for w in words if w in SENSATIONAL_WORDS})
+    if len(sens) >= 3:
+        signals.append(_sig(
+            "sensational-language", "Sensational language",
+            f"Charged terms ({', '.join(sens[:6])}) suggest emotive framing.", "high"))
+    if stats.get("exclamation_count", 0) >= 3:
+        signals.append(_sig(
+            "excessive-punctuation", "Excessive punctuation",
+            "Multiple exclamation marks are uncommon in neutral copy.", "medium"))
+    if stats.get("all_caps_ratio", 0) > 0.08 and stats.get("caps_word_count", 0) >= 3:
+        signals.append(_sig(
+            "heavy-capitalisation", "Heavy capitalisation",
+            "ALL-CAPS emphasis is a common manipulation pattern.", "medium"))
+    strong = sorted({w for w in words if w in STRONG_CLAIM_WORDS})
+    if len(strong) >= 2:
+        signals.append(_sig(
+            "strong-claims", "Absolute claims",
+            f"Absolutes ({', '.join(strong[:4])}) merit verification.", "medium"))
+    obj = sorted({w for w in words if w in OBJECTIVITY_MARKERS})
+    if len(obj) >= 2:
+        signals.append(_sig(
+            "sourcing-language", "Sourcing language present",
+            "References to data/sources slightly increase credibility.", "positive"))
+    if groq_flags:
+        for i, flag in enumerate(groq_flags[:5]):
+            if isinstance(flag, dict):
+                title = str(flag.get("title") or f"flag-{i+1}")[:120]
+                desc = str(flag.get("description") or groq_explanation or title)[:500]
+                sev = str(flag.get("severity", "medium")).lower()
+            else:
+                title, desc, sev = str(flag)[:120], groq_explanation or str(flag), "medium"
+            if sev not in ("high", "medium", "low", "positive", "info"):
+                sev = "medium"
+            signals.append(_sig(f"groq-{i+1}", f"Groq: {title}", desc, sev))
+    elif groq_explanation:
+        signals.append(_sig("groq-verdict", "Groq assessment",
+                            groq_explanation[:500], "info"))
+    if confidence < 0.7:
+        signals.append(_sig("low-confidence", "Low-confidence prediction",
+                            "Close to the decision boundary - treat with caution.", "info"))
+    signals.sort(key=lambda s: _SEVERITY_ORDER.get(s["severity"], 5))
+    return signals[:8]
 
 

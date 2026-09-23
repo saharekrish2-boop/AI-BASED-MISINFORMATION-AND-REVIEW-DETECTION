@@ -264,18 +264,13 @@ class UnauthenticatedAccessTests(unittest.TestCase):
         self.assertEqual(count_analyses(), 1)
 
     def test_retrain_without_key_is_401_and_never_starts_training(self):
-        with mock.patch.object(main.train_news, "train") as news_train, mock.patch.object(
-            main.train_reviews, "train"
-        ) as review_train:
-            status, headers, body = call_api(
-                "POST", "/api/models/train", json_body={"model": "all"}
-            )
-
-        self.assertEqual(status, 401)
-        self.assertIn("www-authenticate", headers)
-        self.assertIn("api key", body["detail"].lower())
-        news_train.assert_not_called()
-        review_train.assert_not_called()
+        # Local training was removed (Groq-only pipeline): the endpoint
+        # is deprecated and always answers 410, never starting any training.
+        status, _, body = call_api(
+            "POST", "/api/models/train", json_body={"model": "all"}
+        )
+        self.assertEqual(status, 410)
+        self.assertIn("Groq", body["detail"])
 
     def test_empty_whitespace_and_malformed_keys_are_rejected(self):
         for headers in (
@@ -354,37 +349,35 @@ class AuthorizedAccessTests(unittest.TestCase):
         status, _, _ = call_api("DELETE", "/api/history", headers={"x-api-key": TEST_API_KEY})
         self.assertEqual(status, 200)
 
-    def test_retrain_with_valid_key_reaches_the_training_pipeline(self):
-        metrics = {"demo_data": False, "accuracy": 0.9, "labels": ["real", "misinformative"]}
-        with mock.patch.object(main.train_news, "train", return_value=metrics) as news_train, \
-                mock.patch.object(main.train_reviews, "train", return_value=metrics) as reviews_train, \
-                mock.patch.object(main.model_loader, "reload_models") as reload_models:
-            status, _, body = call_api(
-                "POST", "/api/models/train", json_body={"model": "all"}, headers=auth_headers()
-            )
-
-        self.assertEqual(status, 200)
-        self.assertTrue(body["success"])
-        self.assertIn("Training complete", body["message"])
-        news_train.assert_called_once()
-        reviews_train.assert_called_once()
-        reload_models.assert_called_once()  # artifacts are reloaded after retraining
+    def test_retrain_endpoint_is_deprecated_groq_only(self):
+        # POST /api/models/train is deprecated: local sklearn training was
+        # removed; all analysis routes through Groq. Always 410.
+        status, _, body = call_api(
+            "POST", "/api/models/train", json_body={"model": "all"}, headers=auth_headers()
+        )
+        self.assertEqual(status, 410)
+        self.assertIn("Groq", body["detail"])
 
     def test_retrain_scope_news_only(self):
-        metrics = {"demo_data": True}
-        with mock.patch.object(main.train_news, "train", return_value=metrics) as news_train, \
-                mock.patch.object(main.train_reviews, "train") as reviews_train, \
-                mock.patch.object(main.model_loader, "reload_models"):
-            status, _, _ = call_api(
-                "POST", "/api/models/train", json_body={"model": "news"}, headers=auth_headers()
-            )
-
-        self.assertEqual(status, 200)
-        news_train.assert_called_once()
-        reviews_train.assert_not_called()
+        status, _, body = call_api(
+            "POST", "/api/models/train", json_body={"model": "news"}, headers=auth_headers()
+        )
+        self.assertEqual(status, 410)
 
     def test_public_endpoints_need_no_key(self):
-        """Read endpoints and the analysis endpoints stay open."""
+        """Read endpoints stay open; analysis needs GROQ_API_KEY (mocked)."""
+        fake_result = {
+            "prediction": "real", "confidence": 0.9, "credibility_score": 0.9,
+            "bias_level": "low", "explanation": "Mocked Groq verdict.",
+            "model": "Groq/test", "processing_time_ms": 5,
+            "signals": [], "text_stats": {
+                "word_count": 10, "char_count": 50, "sentence_count": 1,
+                "avg_word_length": 5.0, "exclamation_count": 0, "question_count": 0,
+                "all_caps_ratio": 0.0, "unique_word_ratio": 0.9,
+                "caps_word_count": 0, "caps_letter_count": 0, "letter_count": 40,
+            },
+            "word_count": 10, "sentiment": "neutral",
+        }
         cases = (
             ("GET", "/api/health", None),
             ("GET", "/api/stats", None),
@@ -405,7 +398,14 @@ class AuthorizedAccessTests(unittest.TestCase):
         )
         for method, path, body in cases:
             with self.subTest(method=method, path=path):
-                status, _, _ = call_api(method, path, json_body=body)
+                if path == "/api/news/analyze":
+                    with mock.patch.object(
+                            main.news_detector, "analyze_news",
+                            return_value=dict(fake_result)) as m:
+                        status, _, _ = call_api(method, path, json_body=body)
+                        m.assert_called_once()
+                else:
+                    status, _, _ = call_api(method, path, json_body=body)
                 self.assertEqual(status, 200)
 
 

@@ -24,17 +24,17 @@ const HOW_IT_WORKS = [
   {
     icon: FileInput,
     title: "1. Submit Content",
-    text: "Paste an article or a customer review. No setup, no API keys — the entire analysis runs on your machine.",
+    text: "Paste an article, review, post, or description. Results are stored as separate database entries for downstream processing.",
   },
   {
     icon: ScanSearch,
-    title: "2. NLP Processing",
-    text: "Text is cleaned, tokenised and vectorised with TF-IDF while lexical features such as punctuation, capitalisation and sentiment are measured.",
+    title: "2. Text Statistics",
+    text: "Lexical features such as punctuation, capitalisation, repetition, and sentiment are measured locally as analysis context.",
   },
   {
     icon: Cpu,
-    title: "3. AI Classification",
-    text: "A logistic regression model trained with scikit-learn estimates the probability the content belongs to each class.",
+    title: "3. Groq Analysis",
+    text: "Every request is routed through the Groq API, which returns a concise, structured, machine-readable verdict.",
   },
   {
     icon: BrainCircuit,
@@ -116,7 +116,7 @@ function HeroVisual() {
         className="absolute -left-4 -top-4 hidden rounded-xl border border-border/70 bg-card/90 px-3 py-2 text-xs font-semibold text-foreground shadow-lg backdrop-blur sm:block"
       >
         <Eye className="mr-1 inline h-3.5 w-3.5 text-cyan-400" aria-hidden="true" />
-        TF-IDF → LM
+        Groq API
       </motion.div>
       <motion.div
         animate={{ y: [0, 8, 0] }}
@@ -124,7 +124,7 @@ function HeroVisual() {
         className="absolute -bottom-4 -right-4 hidden rounded-xl border border-border/70 bg-card/90 px-3 py-2 text-xs font-semibold text-foreground shadow-lg backdrop-blur sm:block"
       >
         <Lock className="mr-1 inline h-3.5 w-3.5 text-violet-400" aria-hidden="true" />
-        Private · no cloud
+        Structured JSON
       </motion.div>
     </div>
   );

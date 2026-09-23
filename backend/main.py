@@ -1,19 +1,20 @@
-"""TruthLens AI - FastAPI application.
+"""TruthLens AI - FastAPI application (Groq-only analysis engine).
 
 Endpoints
 ---------
-GET  /api/health           System + model health
+GET  /api/health           System + Groq health
 GET  /api/stats            Aggregated statistics (from SQLite)
 GET  /api/history          Paginated/filterable analysis history
 GET  /api/history/{id}     Single analysis detail
 DELETE /api/history/{id}   Delete one record
 DELETE /api/history        Clear all records
-POST /api/news/analyze     News misinformation analysis
-POST /api/news/fetch-url   Fetch + extract a public article URL (SSRF-hardened)
+POST /api/news/analyze     News misinformation analysis (headline + article text)
+POST /api/news/fetch-url   Fetch + extract a public article OR video URL (SSRF-hardened)
+POST /api/news/analyze-url Fetch + analyse a public article OR video URL in one step
 POST /api/reviews/analyze  Review authenticity analysis
+POST /api/content/analyze  General content analysis (posts/blogs/descriptions)
 GET  /api/analytics        Aggregated analytics for charts
-GET  /api/models/info      Metadata + metrics for both models
-POST /api/models/train     Retrain models (real sklearn training)
+GET  /api/models/info      Groq engine metadata
 """
 from __future__ import annotations
 
@@ -43,25 +44,21 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import config, schemas
 from .database import check_database, get_db, init_db
-from .ml import model_loader
-from .ml import train_news, train_reviews
 from .models import Analysis
-from .services import news_detector, review_detector
+from .services import general_detector, groq, news_detector, review_detector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("truthlens")
-
-_train_lock = threading.Lock()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
     _log_auth_configuration()
-    try:
-        model_loader.ensure_loaded()
-    except Exception as exc:  # pragma: no cover
-        logger.warning("Model preload failed: %s", exc)
+    if groq.is_configured():
+        logger.info("Groq analysis engine configured (model=%s).", config.GROQ_MODEL)
+    else:
+        logger.warning("GROQ_API_KEY is not set - analysis endpoints return HTTP 503 until configured.")
     yield
 
 
@@ -108,7 +105,6 @@ app.add_middleware(
 _SENSITIVE_ROUTE_RULES: tuple[tuple[str, "_re.Pattern[str]"], ...] = (
     ("DELETE", _re.compile(r"^/api/history/?$")),       # wipe every record
     ("DELETE", _re.compile(r"^/api/history/\d+/?$")),   # delete one record
-    ("POST", _re.compile(r"^/api/models/train/?$")),    # CPU-heavy retraining
 )
 if config.PROTECT_FETCH_URL:  # opt-in via TRUTHLENS_PROTECT_FETCH_URL=true
     _SENSITIVE_ROUTE_RULES += (("POST", _re.compile(r"^/api/news/fetch-url/?$")),)
@@ -209,9 +205,14 @@ async def validation_exception_handler(_req: Request, exc: RequestValidationErro
     return JSONResponse(status_code=422, content={"detail": friendly, "errors": errors})
 
 
-@app.exception_handler(model_loader.ModelUnavailableError)
-async def model_unavailable_handler(_req: Request, exc: model_loader.ModelUnavailableError):
+@app.exception_handler(groq.GroqNotConfigured)
+async def groq_unconfigured_handler(_req: Request, exc: groq.GroqNotConfigured):
     return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.exception_handler(groq.GroqError)
+async def groq_error_handler(_req: Request, exc: groq.GroqError):
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
 
 
 @app.exception_handler(Exception)
@@ -225,27 +226,14 @@ async def unhandled_exception_handler(_req: Request, exc: Exception):  # pragma:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _read_metrics(key: str) -> dict | None:
-    path = config.NEWS_METRICS_PATH if key == "news" else config.REVIEW_METRICS_PATH
-    try:
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # corrupted metrics file
-        logger.warning("Could not read metrics for %s", key)
-    return None
-
-
-def _model_summary(key: str) -> schemas.ModelMetricsSummary:
-    m = _read_metrics(key)
-    if not m:
-        return schemas.ModelMetricsSummary(trained=False)
+def _engine_summary() -> schemas.ModelMetricsSummary:
+    # Groq is remote: "trained" simply means the API key is configured.
+    if not groq.is_configured():
+        return schemas.ModelMetricsSummary(
+            trained=False, algorithm=f"Groq/{config.GROQ_MODEL}")
     return schemas.ModelMetricsSummary(
-        trained=True,
-        accuracy=m.get("accuracy"),
-        demo_data=bool(m.get("demo_data", False)),
-        last_trained=m.get("trained_at"),
-        algorithm=m.get("algorithm"),
-    )
+        trained=True, accuracy=None, demo_data=False,
+        last_trained=None, algorithm=f"Groq/{config.GROQ_MODEL}")
 
 
 def _serialize(analysis: Analysis) -> schemas.HistoryItem:
@@ -309,15 +297,14 @@ def root():
 @app.get("/api/health", response_model=schemas.HealthResponse)
 def health(db: Session = Depends(get_db)):
     db_ok = check_database()
-    models = model_loader.status()
-    engine_ok = models["news"] or models["reviews"]
+    engine_ok = groq.is_configured()
     status = "ok" if db_ok and engine_ok else "degraded"
     return schemas.HealthResponse(
         status=status,
         version=config.VERSION,
         database=db_ok,
-        news_model=models["news"],
-        review_model=models["reviews"],
+        news_model=engine_ok,
+        review_model=engine_ok,
         analysis_engine=engine_ok,
         timestamp=datetime.now(timezone.utc),
     )
@@ -341,11 +328,9 @@ def stats(db: Session = Depends(get_db)):
     avg_conf = db.execute(func.avg(Analysis.confidence)).scalar()
     misinf = counts.get("news|misinformative", 0)
     fake_rev = counts.get("review|suspicious", 0)
+    general_count = sum(v for k, v in counts.items() if k.startswith("general|"))
 
-    news_summary = _model_summary("news")
-    review_summary = _model_summary("reviews")
-    accuracies = [s.accuracy for s in (news_summary, review_summary) if s.accuracy is not None]
-    detection_accuracy = round(sum(accuracies) / len(accuracies), 4) if accuracies else None
+    engine = _engine_summary()
 
     return schemas.StatsResponse(
         total_analyses=total,
@@ -357,9 +342,10 @@ def stats(db: Session = Depends(get_db)):
         real_count=counts.get("news|real", 0),
         genuine_count=counts.get("review|genuine", 0),
         avg_confidence=round(float(avg_conf), 4) if avg_conf is not None else None,
-        detection_accuracy=detection_accuracy,
-        news_model=news_summary,
-        review_model=review_summary,
+        detection_accuracy=None,
+        news_model=engine,
+        review_model=engine,
+        general_count=general_count,
     )
 # ---------------------------------------------------------------------------
 # Analyze endpoints
@@ -380,6 +366,9 @@ def analyze_news(payload: schemas.NewsAnalyzeRequest, db: Session = Depends(get_
         source_url=payload.source_url,
         prediction=result["prediction"],
         confidence=result["confidence"],
+        credibility_score=result.get("credibility_score"),
+        bias_level=result.get("bias_level"),
+        explanation=result.get("explanation"),
         model=result["model"],
         processing_time_ms=result["processing_time_ms"],
         signals=result["signals"],
@@ -403,6 +392,36 @@ _URL_FETCH_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+# Lightweight headers for oEmbed / JSON metadata lookups (video pages).
+_JSON_FETCH_HEADERS = {
+    "User-Agent": config.FETCH_USER_AGENT,
+    "Accept": "application/json, text/javascript, */*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+# Hosts treated as video pages (YouTube, Vimeo, TikTok, …). Sub-domains match too.
+_VIDEO_HOSTS = (
+    "youtube.com",
+    "youtu.be",
+    "m.youtube.com",
+    "youtube-nocookie.com",
+    "vimeo.com",
+    "player.vimeo.com",
+    "tiktok.com",
+    "vm.tiktok.com",
+    "m.tiktok.com",
+    "dailymotion.com",
+    "dai.ly",
+    "twitch.tv",
+    "m.twitch.tv",
+    "facebook.com",
+    "fb.watch",
+    "instagram.com",
+    "rumble.com",
+    "bitchute.com",
+    "odysee.com",
+)
 
 # Hosts/IP ranges that must never be reachable through this endpoint:
 # loopback, private, link-local, CGNAT, multicast/reserved, 6to4 and ULA.
@@ -437,6 +456,7 @@ _BLOCKED_NETWORKS = tuple(
 _CLOUD_METADATA_IPS = frozenset({"169.254.169.254", "100.100.100.200", "fd00:ec2::254"})
 
 _FETCH_URL_PATH = "/api/news/fetch-url"
+_FETCH_URL_PATHS = frozenset({"/api/news/fetch-url", "/api/news/analyze-url"})
 _FETCH_CHUNK_SIZE = 64 * 1024
 
 
@@ -547,13 +567,13 @@ _fetch_limiter = _SlidingWindowRateLimiter(
 
 @app.middleware("http")
 async def rate_limit_article_fetch(request: Request, call_next):
-    """Rate-limit only the article-fetch endpoint (10 requests / 60 s default).
+    """Rate-limit only the outbound fetch endpoints (10 requests / 60 s default).
 
     Implemented without extra dependencies (drop-in equivalent of slowapi).
     Returns 429 + ``Retry-After`` when a client exceeds its budget; every other
     route is passed through untouched.
     """
-    if request.method == "POST" and request.url.path.rstrip("/") == _FETCH_URL_PATH:
+    if request.method == "POST" and request.url.path.rstrip("/") in _FETCH_URL_PATHS:
         client = request.client.host if request.client else "unknown"
         allowed, retry_after = _fetch_limiter.check(client)
         if not allowed:
@@ -751,10 +771,221 @@ def _extract_article_html(html: str) -> dict:
         paragraphs = soup.find_all("p")
         content = "\n\n".join(p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20)
 
+    # Fallback 2: JSON-LD Article/NewsArticle body (MSN/Bing-style pages embed
+    # article text in <script type="application/ld+json"> even when the visible
+    # DOM is a JS shell with zero <p> tags).
+    if not content or len(content) < 100:
+        ld_texts: list[str] = []
+        for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            raw = (script.string or script.get_text() or "").strip()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+            items = data if isinstance(data, list) else [data]
+            expanded: list = []
+            for item in items:
+                if isinstance(item, dict) and isinstance(item.get("@graph"), list):
+                    expanded.extend(item["@graph"])
+                else:
+                    expanded.append(item)
+            for item in expanded:
+                if not isinstance(item, dict):
+                    continue
+                types = item.get("@type", "")
+                names = [str(t).lower() for t in (types if isinstance(types, list) else [types])]
+                if not any(n in ("article", "newsarticle", "reportage", "blogposting", "webpage") for n in names):
+                    continue
+                for key in ("articleBody", "text", "description"):
+                    val = item.get(key)
+                    vals = [val] if isinstance(val, str) else (val if isinstance(val, list) else [])
+                    for v in vals:
+                        text = str(v).strip()
+                        if len(text) > 40:
+                            ld_texts.append(text)
+                if not headline:
+                    for key in ("headline", "name"):
+                        val = str(item.get(key, "") or "").strip()
+                        if len(val) > 10:
+                            headline = val
+                            break
+        if ld_texts:
+            content = "\n\n".join(ld_texts)
+
+    # Fallback 3: <noscript> content (some JS shells ship static copy there).
+    if (not content or len(content) < 100):
+        noscripts = soup.find_all("noscript")
+        ns_paras: list[str] = []
+        for ns in noscripts:
+            inner = _BS(str(ns), "lxml")
+            for p in inner.find_all("p"):
+                text = p.get_text(strip=True)
+                if len(text) > 20:
+                    ns_paras.append(text)
+        if ns_paras:
+            content = "\n\n".join(ns_paras)
+
+    # Fallback 4: largest readable text block on the page (readability-style).
+    # Catches pages where prose lives in <div>/<span> without <p> wrappers.
+    if not content or len(content) < 100:
+        best = ""
+        for container in soup.find_all(["article", "main", "section", "div"]):
+            # Skip obvious chrome.
+            cls = " ".join(container.get("class", [])).lower()
+            cid = str(container.get("id", "")).lower()
+            if any(k in cls or k in cid for k in ("nav", "menu", "header", "footer", "sidebar", "ad", "cookie", "popup", "modal", "script")):
+                continue
+            text = container.get_text(separator="\n", strip=True)
+            lines = [ln.strip() for ln in text.split("\n") if len(ln.strip()) > 40]
+            block = "\n\n".join(lines)
+            if len(block) > len(best):
+                best = block
+        if len(best) > 100:
+            content = best
+
     # Clean up whitespace
     content = _re.sub(r"\n{3,}", "\n\n", content).strip()
 
     return {"headline": headline, "content": content}
+
+
+def _extract_meta_content(soup: "_BS", *names: str) -> str:
+    """Return first non-empty <meta> content for given property/name keys."""
+    for name in names:
+        tag = soup.find("meta", attrs={"property": name}) or soup.find("meta", attrs={"name": name})
+        if tag and (tag.get("content") or "").strip():
+            return str(tag["content"]).strip()
+    return ""
+
+
+def is_video_url(url: str) -> bool:
+    """True when *url* points at a known video platform (suffix match)."""
+    try:
+        host = (urlparse((url or "").strip()).hostname or "").lower().strip().rstrip(".")
+    except ValueError:
+        return False
+    if not host:
+        return False
+    return any(host == k or host.endswith("." + k) for k in _VIDEO_HOSTS)
+
+
+def _extract_video_metadata_html(html: str) -> dict:
+    """Extract title/description/captions from a video watch page (no JS)."""
+    soup = _BS(html, "lxml")
+    headline = _extract_meta_content(soup, "og:title", "twitter:title", "title")
+    if not headline and soup.title and soup.title.string:
+        headline = soup.title.string.strip()
+    if not headline:
+        tag = soup.find("meta", attrs={"itemprop": "name"})
+        if tag and (tag.get("content") or "").strip():
+            headline = str(tag["content"]).strip()
+    description = _extract_meta_content(soup, "og:description", "twitter:description", "description")
+    if not description:
+        tag = soup.find("meta", attrs={"itemprop": "description"})
+        if tag and (tag.get("content") or "").strip():
+            description = str(tag["content"]).strip()
+    ld_texts: list[str] = []
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = (script.string or script.get_text() or "").strip()
+        if not raw or "VideoObject" not in raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        items = data if isinstance(data, list) else [data]
+        expanded: list = []
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get("@graph"), list):
+                expanded.extend(item["@graph"])
+            else:
+                expanded.append(item)
+        for item in expanded:
+            if not isinstance(item, dict):
+                continue
+            types = item.get("@type", "")
+            names = types if isinstance(types, list) else [types]
+            if not any(str(t).lower() == "videoobject" for t in names):
+                continue
+            for key in ("transcript", "caption", "captions", "description"):
+                val = item.get(key)
+                vals = [val] if isinstance(val, str) else (val if isinstance(val, list) else [])
+                for v in vals:
+                    text = str(v.get("text", "") if isinstance(v, dict) else v).strip()
+                    if len(text) > 20:
+                        ld_texts.append(text)
+    tracks: list[str] = []
+    for track in soup.find_all("track"):
+        kind = (track.get("kind") or "").lower()
+        src = (track.get("src") or "").strip()
+        if kind in ("", "captions", "subtitles") and src:
+            tracks.append(src)
+    return {"headline": headline, "description": description, "ld": ld_texts, "tracks": tracks}
+
+
+def _fetch_oembed_title(url: str) -> tuple[str, str]:
+    """Best-effort oEmbed title/author lookup. Returns ("", "") on failure."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return "", ""
+    quoted = _requests.utils.quote(url, safe="")
+    if "youtube.com" in host or "youtu.be" in host or "youtube-nocookie" in host:
+        endpoint = f"https://www.youtube.com/oembed?url={quoted}&format=json"
+    elif "vimeo.com" in host:
+        endpoint = f"https://vimeo.com/api/oembed.json?url={quoted}"
+    elif "tiktok" in host:
+        endpoint = f"https://www.tiktok.com/oembed?url={quoted}"
+    elif "dailymotion" in host or "dai.ly" in host:
+        endpoint = f"https://www.dailymotion.com/services/oembed?url={quoted}"
+    else:
+        return "", ""
+    try:
+        _validate_fetch_url(endpoint)
+        session = _requests.Session()
+        session.trust_env = False
+        try:
+            resp = session.get(endpoint, headers=_JSON_FETCH_HEADERS, timeout=config.FETCH_TIMEOUT_SECONDS)
+        finally:
+            session.close()
+        if resp.status_code != 200:
+            return "", ""
+        data = resp.json()
+        if not isinstance(data, dict):
+            return "", ""
+        return str(data.get("title", "") or "").strip(), str(data.get("author_name", "") or "").strip()
+    except Exception:
+        return "", ""
+
+
+def _extract_link_content(url: str, html: str) -> dict:
+    """Branch article vs video extraction; always returns kind/headline/content."""
+    if not is_video_url(url):
+        ex = _extract_article_html(html)
+        return {"kind": "article", "headline": ex["headline"], "content": ex["content"]}
+    meta = _extract_video_metadata_html(html)
+    oembed_title, oembed_author = _fetch_oembed_title(url)
+    headline = meta["headline"] or oembed_title or "Video link"
+    parts: list[str] = []
+    if meta["description"]:
+        parts.append(meta["description"])
+    parts.extend(meta["ld"])
+    if meta["tracks"]:
+        parts.append("Caption tracks found: " + ", ".join(meta["tracks"][:5]))
+    if oembed_author:
+        parts.append(f"Channel/author: {oembed_author}")
+    if oembed_title and oembed_title != headline:
+        parts.append(oembed_title)
+    content = "\n\n".join(p.strip() for p in parts if p and p.strip()).strip()
+    if not content:
+        fallback = _extract_article_html(html)
+        if fallback["content"]:
+            content = fallback["content"]
+        if fallback["headline"] and not meta["headline"]:
+            headline = fallback["headline"]
+    return {"kind": "video", "headline": headline, "content": content}
 
 
 # Opt-in protection for the outbound article fetcher
@@ -766,28 +997,95 @@ _FETCH_URL_AUTH_DEPENDENCIES = [Depends(require_api_key)] if config.PROTECT_FETC
 
 @app.post("/api/news/fetch-url", dependencies=_FETCH_URL_AUTH_DEPENDENCIES)
 def fetch_news_url(payload: schemas.NewsFetchUrlRequest):
-    """Fetch a news article URL server-side and extract headline + content.
+    """Fetch a news article **or video page** URL and extract analysable text.
 
-    Runs on the backend to bypass CORS restrictions that browsers enforce on
-    cross-origin requests. The fetch itself is performed by ``safe_fetch_url``,
-    which enforces SSRF protections (public-IP-only targets, re-validated
-    redirect hops, no credentials, 2 MB body cap, 10 s timeout); this endpoint
-    is additionally rate-limited per client IP (429 + Retry-After).
+    Webpage URLs return headline + article body (existing behaviour); video
+    links (YouTube, Vimeo, TikTok, ...) return video title + description /
+    captions / oEmbed metadata in the SAME shape so the frontend can feed it
+    straight into POST /api/news/analyze. Only the URL is required.
     """
     final_url, html = safe_fetch_url(payload.url)
-    extracted = _extract_article_html(html)
+    extracted = _extract_link_content(final_url, html)
 
     if not extracted["content"] or len(extracted["content"]) < 50:
+        if extracted["kind"] == "video":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Could not extract captions or metadata from this video link. "
+                    "The page may require JavaScript or login. "
+                    "Fallback: paste the video title + description as article text and use Analyze Article."
+                ),
+            )
         raise HTTPException(
             status_code=422,
-            detail="Could not extract meaningful article text from this URL. The page may use a format we cannot parse, or require JavaScript to load.",
+            detail=(
+                "This page loads its article with JavaScript, so no text could be extracted. "
+                "Fallback: open the article, copy the headline + a few paragraphs into the text fields, "
+                "then use Analyze Article (paste_text_fallback)."
+            ),
         )
 
     return {
         "url": final_url,  # post-redirect URL, so the recorded source is accurate
         "headline": extracted["headline"],
         "content": extracted["content"],
+        "kind": extracted["kind"],
+        "source_type": extracted["kind"],
+        "is_video": extracted["kind"] == "video",
     }
+
+
+@app.post("/api/news/analyze-url", response_model=schemas.NewsAnalysisResponse)
+def analyze_news_url(payload: schemas.NewsFetchUrlRequest, db: Session = Depends(get_db)):
+    """One-shot URL/video analysis: fetch then analyse. URL only, no text needed.
+
+    Runs the exact same ML pipeline + response schema as POST /api/news/analyze.
+    """
+    final_url, html = safe_fetch_url(payload.url)
+    extracted = _extract_link_content(final_url, html)
+
+    if not extracted["content"] or len(extracted["content"]) < 50:
+        if extracted["kind"] == "video":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Could not extract captions or metadata from this video link. "
+                    "The page may require JavaScript or login. "
+                    "Fallback: paste the video title + description as article text and use Analyze Article."
+                ),
+            )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This page loads its article with JavaScript, so no text could be extracted. "
+                "Fallback: open the article, copy the headline + a few paragraphs into the text fields, "
+                "then use Analyze Article (paste_text_fallback)."
+            ),
+        )
+
+    headline = extracted["headline"] or ""
+    content = extracted["content"]
+    result = news_detector.analyze_news(headline=headline, content=content, source_url=final_url)
+    full_text = f"{headline}\n{content}".strip()
+    row = _persist(db, "news", full_text, result, headline=headline or None, source_url=final_url)
+    return schemas.NewsAnalysisResponse(
+        id=row.id,
+        headline=headline,
+        source_url=final_url,
+        prediction=result["prediction"],
+        confidence=result["confidence"],
+        credibility_score=result.get("credibility_score"),
+        bias_level=result.get("bias_level"),
+        explanation=result.get("explanation"),
+        model=result["model"],
+        processing_time_ms=result["processing_time_ms"],
+        signals=result["signals"],
+        text_stats=result["text_stats"],
+        timestamp=row.created_at,
+        word_count=result["word_count"],
+        sentiment=result["sentiment"],
+    )
 
 
 @app.post("/api/reviews/analyze", response_model=schemas.ReviewAnalysisResponse)
@@ -811,6 +1109,34 @@ def analyze_review(payload: schemas.ReviewAnalyzeRequest, db: Session = Depends(
         verified_purchase=payload.verified_purchase,
         prediction=result["prediction"],
         confidence=result["confidence"],
+        credibility_score=result.get("credibility_score"),
+        bias_level=result.get("bias_level"),
+        explanation=result.get("explanation"),
+        authenticity_indicators=result.get("authenticity_indicators"),
+        model=result["model"],
+        processing_time_ms=result["processing_time_ms"],
+        signals=result["signals"],
+        text_stats=result["text_stats"],
+        timestamp=row.created_at,
+        word_count=result["word_count"],
+        sentiment=result["sentiment"],
+    )
+
+
+@app.post("/api/content/analyze", response_model=schemas.GeneralAnalysisResponse)
+def analyze_general(payload: schemas.GeneralAnalyzeRequest, db: Session = Depends(get_db)):
+    """General content analysis: posts, blogs, product descriptions (Groq)."""
+    result = general_detector.analyze_general(
+        content=payload.content, content_type=payload.content_type)
+    row = _persist(db, "general", payload.content, result)
+    return schemas.GeneralAnalysisResponse(
+        id=row.id,
+        content_type=payload.content_type,
+        prediction=result["prediction"],
+        confidence=result["confidence"],
+        credibility_score=result["credibility_score"],
+        bias_level=result["bias_level"],
+        explanation=result.get("explanation"),
         model=result["model"],
         processing_time_ms=result["processing_time_ms"],
         signals=result["signals"],
@@ -826,7 +1152,7 @@ def analyze_review(payload: schemas.ReviewAnalyzeRequest, db: Session = Depends(
 # ---------------------------------------------------------------------------
 @app.get("/api/history", response_model=schemas.HistoryResponse)
 def history(
-    type: str | None = Query(default=None, pattern="^(news|review)$"),
+    type: str | None = Query(default=None, pattern="^(news|review|general)$"),
     prediction: str | None = Query(default=None),
     q: str | None = Query(default=None, max_length=200),
     sort: str = Query(default="newest", pattern="^(newest|oldest|confidence)$"),
@@ -839,7 +1165,8 @@ def history(
         stmt = stmt.where(Analysis.type == type)
     if prediction and prediction != "all":
         if prediction == "flagged":
-            stmt = stmt.where(Analysis.prediction.in_(["misinformative", "suspicious"]))
+            stmt = stmt.where(Analysis.prediction.in_(
+                ["misinformative", "suspicious", "misleading", "questionable"]))
         else:
             stmt = stmt.where(Analysis.prediction == prediction)
     if q:
@@ -922,9 +1249,9 @@ def analytics(db: Session = Depends(get_db)):
         type_counts[a_type] = type_counts.get(a_type, 0) + 1
         if a_type == "news":
             news_results[prediction] = news_results.get(prediction, 0) + 1
-        else:
+        elif a_type == "review":
             review_results[prediction] = review_results.get(prediction, 0) + 1
-        if prediction in ("misinformative", "suspicious"):
+        if prediction in ("misinformative", "suspicious", "misleading", "questionable"):
             flagged += 1
         if sentiment in sentiment_distribution:
             sentiment_distribution[sentiment] += 1
@@ -934,8 +1261,8 @@ def analytics(db: Session = Depends(get_db)):
                 break
         day_key = created_at.date().isoformat() if created_at else None
         if day_key and day_key in daily:
-            daily[day_key][a_type] += 1
-            if prediction in ("misinformative", "suspicious"):
+            daily[day_key][a_type] = daily[day_key].get(a_type, 0) + 1
+            if prediction in ("misinformative", "suspicious", "misleading", "questionable"):
                 daily[day_key]["flagged"] += 1
 
     confidence_buckets = [
@@ -946,9 +1273,10 @@ def analytics(db: Session = Depends(get_db)):
         {
             "date": d,
             "short": datetime.fromisoformat(d).strftime("%b %d"),
-            "news": v["news"],
-            "review": v["review"],
-            "total": v["news"] + v["review"],
+            "news": v.get("news", 0),
+            "review": v.get("review", 0),
+            "general": v.get("general", 0),
+            "total": v.get("news", 0) + v.get("review", 0) + v.get("general", 0),
         }
         for d, v in daily.items()
     ]
@@ -956,10 +1284,10 @@ def analytics(db: Session = Depends(get_db)):
         {
             "date": d,
             "short": datetime.fromisoformat(d).strftime("%b %d"),
-            "rate": round(v["flagged"] / (v["news"] + v["review"]), 4)
-            if (v["news"] + v["review"]) > 0 else 0.0,
+            "rate": round(v["flagged"] / (v.get("news", 0) + v.get("review", 0) + v.get("general", 0)), 4)
+            if (v.get("news", 0) + v.get("review", 0) + v.get("general", 0)) > 0 else 0.0,
             "flagged": v["flagged"],
-            "total": v["news"] + v["review"],
+            "total": v.get("news", 0) + v.get("review", 0) + v.get("general", 0),
         }
         for d, v in daily.items()
     ]
@@ -977,79 +1305,51 @@ def analytics(db: Session = Depends(get_db)):
         daily_suspicious_rate=daily_suspicious_rate,
     )
 # ---------------------------------------------------------------------------
-# Model info / training
+# Engine info (Groq only - no local training)
 # ---------------------------------------------------------------------------
 @app.get("/api/models/info", response_model=list[schemas.ModelInfoResponse])
 def models_info():
     info = []
-    for key, name in (("news", "News Detection Model"), ("reviews", "Review Detection Model")):
-        metrics = _read_metrics(key)
-        artifact = config.NEWS_MODEL_PATH if key == "news" else config.REVIEW_MODEL_PATH
+    specs = (
+        ("news", "News Detection Model",
+         ["real", "misinformative"]),
+        ("reviews", "Review Detection Model",
+         ["genuine", "suspicious"]),
+        ("general", "General Content Model",
+         ["credible", "questionable", "misleading"]),
+    )
+    for key, name, labels in specs:
         base = {
             "key": key,
             "name": name,
-            "algorithm": "TF-IDF + Logistic Regression",
-            "vectorizer": "TF-IDF (word 1-2 grams, sublinear tf)",
-            "classifier": "Logistic Regression (balanced class weights)",
-            "trained": artifact.exists(),
-            "demo_data": bool(metrics.get("demo_data")) if metrics else True,
+            "algorithm": f"Groq/{config.GROQ_MODEL}",
+            "vectorizer": "Groq (remote LLM, no TF-IDF)",
+            "classifier": "Groq Chat Completions (JSON mode)",
+            "trained": groq.is_configured(),
+            "demo_data": False,
+            "training_samples": None,
+            "test_samples": None,
+            "accuracy": None,
+            "precision": None,
+            "recall": None,
+            "f1": None,
+            "confusion_matrix": None,
+            "labels": labels,
+            "last_trained": None,
+            "data_source": f"Groq {config.GROQ_BASE_URL}",
         }
-        if metrics:
-            base.update({
-                "training_samples": metrics.get("training_samples"),
-                "test_samples": metrics.get("test_samples"),
-                "accuracy": metrics.get("accuracy"),
-                "precision": metrics.get("precision"),
-                "recall": metrics.get("recall"),
-                "f1": metrics.get("f1"),
-                "confusion_matrix": metrics.get("confusion_matrix"),
-                "labels": metrics.get("labels"),
-                "last_trained": metrics.get("trained_at"),
-                "data_source": metrics.get("data_source"),
-            })
         info.append(schemas.ModelInfoResponse(**base))
     return info
 
 
 @app.post("/api/models/train", response_model=schemas.TrainResponse)
-def train_models(
-    payload: schemas.TrainRequest,
-    _auth: None = Depends(require_api_key),
-):
-    if not _train_lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="Training is already in progress.")
-    started = time.perf_counter()
-    news_metrics = None
-    reviews_metrics = None
-    try:
-        try:
-            if payload.model in ("all", "news"):
-                news_metrics = train_news.train(verbose=False)
-        except Exception as exc:
-            logger.exception("News training failed")
-            raise HTTPException(status_code=500, detail=f"News model training failed: {exc}") from exc
-        try:
-            if payload.model in ("all", "reviews"):
-                reviews_metrics = train_reviews.train(verbose=False)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.exception("Review training failed")
-            raise HTTPException(status_code=500, detail=f"Review model training failed: {exc}") from exc
-        model_loader.reload_models()
-        elapsed = int((time.perf_counter() - started) * 1000)
-        scope = payload.model if payload.model != "all" else "both models"
-        message = f"Training complete for {scope}."
-        if news_metrics and news_metrics.get("demo_data"):
-            message += " News model trained on DEMO data."
-        if reviews_metrics and reviews_metrics.get("demo_data"):
-            message += " Review model trained on DEMO data."
-        return schemas.TrainResponse(
-            success=True, message=message, news=news_metrics,
-            reviews=reviews_metrics, elapsed_ms=elapsed,
-        )
-    finally:
-        _train_lock.release()
+def train_models(payload: schemas.TrainRequest):
+    raise HTTPException(
+        status_code=410,
+        detail=("Local training was removed. All analysis is routed through "
+                "Groq only - no TF-IDF / scikit-learn models are used."),
+    )
+
 
 
 

@@ -1,1 +1,1 @@
-"""ML subpackage: models, preprocessing, training and artifact loading."""
+"""Analysis package (Groq-only engine; no local ML artifacts)."""

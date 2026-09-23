@@ -1,6 +1,7 @@
 // Centralized API service - all backend communication goes through this module.
 import type {
   Analytics,
+  GeneralAnalysisResult,
   Health,
   HistoryItem,
   HistoryQuery,
@@ -173,10 +174,20 @@ export function getModelInfo(): Promise<ModelInfo[]> {
   return request<ModelInfo[]>("/api/models/info");
 }
 
-export function trainModels(model: "all" | "news" | "reviews" = "all"): Promise<TrainResponse> {
+export function trainModels(model: "all" | "news" | "reviews" | "general" = "all"): Promise<TrainResponse> {
   return request<TrainResponse>("/api/models/train", {
     method: "POST",
     body: JSON.stringify({ model }),
+  });
+}
+
+export function analyzeGeneral(payload: {
+  content: string;
+  content_type?: "post" | "blog" | "description" | "article";
+}): Promise<GeneralAnalysisResult> {
+  return request<GeneralAnalysisResult>("/api/content/analyze", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 
@@ -184,10 +195,20 @@ export interface FetchedArticle {
   url: string;
   headline: string;
   content: string;
+  kind?: "article" | "video";
+  source_type?: "article" | "video";
+  is_video?: boolean;
 }
 
 export function fetchArticleFromUrl(url: string): Promise<FetchedArticle> {
   return request<FetchedArticle>("/api/news/fetch-url", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+}
+
+export function analyzeNewsUrl(url: string): Promise<NewsAnalysisResult> {
+  return request<NewsAnalysisResult>("/api/news/analyze-url", {
     method: "POST",
     body: JSON.stringify({ url }),
   });
