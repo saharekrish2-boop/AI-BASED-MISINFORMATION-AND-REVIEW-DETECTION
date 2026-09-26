@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Local env / secrets (never commit real keys)
+.env
+*.env
+!.env.example
+
+# Local runtime database (SQLite + WAL/SHM sidecars)
+backend/data/*.db
+backend/data/*.db-shm
+backend/data/*.db-wal
+
+# Node / dependencies
+node_modules/
+npm-debug.log*
+dist/
+build/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+*.log

@@ -1,0 +1,16 @@
+{
+    "name": "truthlens-ai",
+    "version": "2.0.0",
+    "private": true,
+    "description": "TruthLens AI unified workspace — static frontend + FastAPI/Groq backend.",
+    "type": "module",
+    "scripts": {
+        "dev": "node scripts/dev.mjs",
+        "dev:api": "python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8765",
+        "dev:web": "python -m http.server 5173 --bind 127.0.0.1 --directory frontend",
+        "start": "python -m uvicorn backend.main:app --host 127.0.0.1 --port 8765"
+    },
+    "engines": {
+        "node": ">=18"
+    }
+}

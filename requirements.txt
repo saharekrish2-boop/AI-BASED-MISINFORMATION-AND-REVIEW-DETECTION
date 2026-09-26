@@ -1,0 +1,9 @@
+# TruthLens AI - backend dependencies (Groq-only analysis engine)
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+pydantic>=2.6
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=4.9
+python-dotenv>=1.0
