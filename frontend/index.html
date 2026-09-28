@@ -74,6 +74,16 @@
             transition: background-color 280ms ease, color 280ms ease;
         }
 
+        /* Transient class added only while toggling themes so every
+           adaptive surface cross-fades instead of snapping. */
+        html.theme-animating,
+        html.theme-animating *,
+        html.theme-animating *::before,
+        html.theme-animating *::after {
+            transition: background-color 360ms ease, color 360ms ease,
+                border-color 360ms ease, fill 360ms ease, box-shadow 360ms ease;
+        }
+
         button,
         a {
             font: inherit;
@@ -1756,9 +1766,14 @@
 
         themeSwitchers.forEach(themeSwitcher => {
             themeSwitcher.addEventListener("click", () => {
+                root.classList.add("theme-animating");
                 root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
                 localStorage.setItem("truthlens-theme", root.dataset.theme);
                 updateThemeControls();
+                window.clearTimeout(themeSwitcher._fadeTimer);
+                themeSwitcher._fadeTimer = window.setTimeout(() => {
+                    root.classList.remove("theme-animating");
+                }, 400);
             });
         });
 
