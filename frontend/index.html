@@ -30,6 +30,8 @@
             --dashboard-scrim: rgba(3, 6, 20, 0.64);
             --dashboard-overlay: rgba(4, 7, 19, 0.42);
             --canvas-opacity: 0.56;
+            --hero-tint-rgb: 2, 4, 14;
+            --dashboard-tint-rgb: 3, 6, 20;
         }
 
         :root[data-theme="light"] {
@@ -54,6 +56,8 @@
             --dashboard-scrim: rgba(228, 237, 250, 0.68);
             --dashboard-overlay: rgba(229, 238, 250, 0.52);
             --canvas-opacity: 0.32;
+            --hero-tint-rgb: 228, 235, 247;
+            --dashboard-tint-rgb: 228, 237, 250;
         }
 
         * {
@@ -118,8 +122,8 @@
         .landing-hero::after {
             z-index: -1;
             background:
-                linear-gradient(90deg, var(--hero-scrim) 0%, rgba(2, 4, 14, 0.2) 39%, var(--hero-scrim-strong) 76%),
-                linear-gradient(0deg, rgba(3, 6, 17, 0.24), transparent 42%);
+                linear-gradient(90deg, var(--hero-scrim) 0%, rgba(var(--hero-tint-rgb), 0.2) 39%, var(--hero-scrim-strong) 76%),
+                linear-gradient(0deg, rgba(var(--hero-tint-rgb), 0.24), transparent 42%);
             transition: background 280ms ease;
         }
 
@@ -382,7 +386,7 @@
             z-index: 1;
             background:
                 radial-gradient(circle at 78% 15%, var(--panel-glow), transparent 28rem),
-                linear-gradient(115deg, var(--dashboard-scrim) 8%, rgba(3, 6, 20, 0.18) 58%, var(--dashboard-scrim) 100%);
+                linear-gradient(115deg, var(--dashboard-scrim) 8%, rgba(var(--dashboard-tint-rgb), 0.18) 58%, var(--dashboard-scrim) 100%);
             pointer-events: none;
             transition: background 280ms ease;
         }
@@ -1358,8 +1362,8 @@
 
             .landing-hero::after {
                 background:
-                    linear-gradient(180deg, rgba(2, 4, 14, 0.25) 0%, var(--hero-scrim-strong) 56%),
-                    linear-gradient(0deg, rgba(3, 6, 17, 0.35), transparent 50%);
+                    linear-gradient(180deg, rgba(var(--hero-tint-rgb), 0.25) 0%, var(--hero-scrim-strong) 56%),
+                    linear-gradient(0deg, rgba(var(--hero-tint-rgb), 0.35), transparent 50%);
             }
 
             .hero-panel {
