@@ -84,6 +84,9 @@ MIN_NEWS_LENGTH = 20
 MIN_REVIEW_LENGTH = 10
 MAX_GENERAL_LENGTH = 20000
 MIN_GENERAL_LENGTH = 10
+# Below this many words of article body we refuse to guess (headline/byline-only
+# pastes make the model hallucinate a critique). Env-overridable for tuning.
+MIN_ARTICLE_WORDS = int(os.getenv("TRUTHLENS_MIN_ARTICLE_WORDS", "50"))
 
 # ---------------------------------------------------------------------------
 # Server-side URL fetching (SSRF / DoS hardening, see README "Security Notes")

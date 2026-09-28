@@ -145,13 +145,70 @@ def _norm_sent(v) -> str:
     return s if s in {"positive", "neutral", "negative"} else "neutral"
 
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _quote_key(text: str) -> str:
+    """Normalise a string for verbatim-quote matching (case + whitespace)."""
+    return _WS_RE.sub(" ", (text or "").casefold()).strip()
+
+
+def _ground_flags(flags: list, source_text: str) -> list:
+    """Keep only flags whose 'evidence' is a verbatim substring of the input.
+
+    This blocks hallucinated signals: a flag with no evidence, or evidence that
+    does not literally appear in the submitted article, is dropped.
+    """
+    haystack = _quote_key(source_text)
+    grounded: list = []
+    for flag in flags or []:
+        if not isinstance(flag, dict):
+            continue
+        evidence = str(flag.get("evidence") or "").strip()
+        if not evidence or _quote_key(evidence) not in haystack:
+            continue
+        flag = dict(flag)
+        flag["evidence"] = evidence[:200]
+        grounded.append(flag)
+    return grounded
+
+
+def analyze_news(headline: str, content: str) -> dict:
+    user = f"Headline: {headline or '(none)'}\n\nArticle:\n{content}"
+    parsed, ms = chat_complete_json(NEWS_SYSTEM, user)
+    pred = str(parsed.get("prediction", "")).lower().strip()
+    if pred not in {"real", "misinformative"}:
+        pred = "misinformative" if _clamp01(parsed.get("credibility_score")) < 0.5 else "real"
+    raw_flags = parsed.get("flags") if isinstance(parsed.get("flags"), list) else []
+    grounded_flags = _ground_flags(raw_flags, f"{headline}\n{content}")
+    return {
+        "prediction": pred,
+        "confidence": round(_clamp01(parsed.get("confidence")), 4),
+        "credibility_score": round(_clamp01(parsed.get("credibility_score")), 4),
+        "bias_level": _norm_bias(parsed.get("bias_level")),
+        "sentiment": _norm_sent(parsed.get("sentiment")),
+        "explanation": str(parsed.get("explanation", ""))[:500],
+        "flags": grounded_flags,
+        "dropped_ungrounded_flags": max(0, len(raw_flags) - len(grounded_flags)),
+        "model": MODEL_NAME, "processing_time_ms": ms,
+    }
+
+
 NEWS_SYSTEM = (
     "You are a misinformation-detection assistant. Analyse the news headline "
     "and article text for misinformation, bias, or manipulation patterns. "
+    "Judge ONLY substantive claims that actually appear in the supplied text; "
+    "never invent facts, entities, prices or valuations that are not present. "
+    "Numbers or words that look merged, garbled or out of order (for example "
+    "'20266' or missing spaces) are almost certainly copy/paste artifacts - "
+    "ignore them and never cite them as evidence of misinformation. "
     "Return ONLY JSON: prediction ('real'|'misinformative'), confidence (0-1), "
     "credibility_score (0-1), bias_level ('low'|'medium'|'high'), "
     "sentiment ('positive'|'neutral'|'negative'), explanation (1-2 sentences), "
-    "flags (array of {title, description, severity high|medium|low|info})."
+    "flags (array of {title, description, severity high|medium|low|info, "
+    "evidence}). For every flag, 'evidence' MUST be a short verbatim substring "
+    "copied exactly from the text above that demonstrates the issue; if you "
+    "cannot quote supporting text, do not emit that flag."
 )
 
 REVIEW_SYSTEM = (
@@ -172,24 +229,6 @@ GENERAL_SYSTEM = (
     "sentiment ('positive'|'neutral'|'negative'), explanation (1-2 sentences), "
     "flags (array of {title, description, severity})."
 )
-
-
-def analyze_news(headline: str, content: str) -> dict:
-    user = f"Headline: {headline or '(none)'}\n\nArticle:\n{content}"
-    parsed, ms = chat_complete_json(NEWS_SYSTEM, user)
-    pred = str(parsed.get("prediction", "")).lower().strip()
-    if pred not in {"real", "misinformative"}:
-        pred = "misinformative" if _clamp01(parsed.get("credibility_score")) < 0.5 else "real"
-    return {
-        "prediction": pred,
-        "confidence": round(_clamp01(parsed.get("confidence")), 4),
-        "credibility_score": round(_clamp01(parsed.get("credibility_score")), 4),
-        "bias_level": _norm_bias(parsed.get("bias_level")),
-        "sentiment": _norm_sent(parsed.get("sentiment")),
-        "explanation": str(parsed.get("explanation", ""))[:500],
-        "flags": parsed.get("flags") if isinstance(parsed.get("flags"), list) else [],
-        "model": MODEL_NAME, "processing_time_ms": ms,
-    }
 
 
 def analyze_review(review_text: str, product_name=None,
