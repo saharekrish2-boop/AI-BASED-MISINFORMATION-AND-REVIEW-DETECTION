@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#080b18">
     <title>TruthLens AI — Signal Detection</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b1220'/%3E%3Ccircle cx='32' cy='32' r='22' fill='none' stroke='%237be7ff' stroke-width='3'/%3E%3Cpath d='M23 26h18M32 26v19' stroke='%23a8f58a' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fullPage.js/4.0.20/fullpage.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fullPage.js/4.0.20/fullpage.min.js" defer></script>
     <style>
@@ -1230,10 +1231,217 @@
             line-height: 1.5;
         }
 
-        .result-signals {
-            color: var(--text) !important;
-            font-size: 0.72rem !important;
+        .result-verdict[data-verdict="positive"] {
+            color: var(--accent);
+        }
+
+        .result-verdict[data-verdict="negative"] {
+            color: #ff9f9f;
+        }
+
+        .result-verdict[data-verdict="neutral"] {
+            color: #ffd27d;
+        }
+
+        .result-verdict[data-verdict="info"] {
+            color: var(--accent-strong);
+        }
+
+        .analysis-result .result-explanation {
+            color: var(--text);
+            font-size: 0.8rem;
+        }
+
+        .result-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem 1rem;
+            padding: 0.45rem 0 0.2rem;
+            border-top: 1px solid var(--panel-border);
+        }
+
+        .result-meta-item {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 0.35rem;
+            color: var(--muted);
+            font-size: 0.7rem;
+        }
+
+        .result-meta-item strong {
+            color: var(--text);
+            font-size: 0.76rem;
+            font-weight: 800;
+        }
+
+        .analysis-result .signals-heading {
+            margin-top: 0.2rem;
+            color: var(--muted);
+            font-size: 0.66rem;
+            font-weight: 800;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+
+        .signal-list {
+            display: grid;
+            gap: 0.5rem;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+
+        .signal-item {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr);
+            gap: 0.55rem;
+            align-items: start;
+        }
+
+        .signal-badge {
+            padding: 0.12rem 0.42rem;
+            border: 1px solid var(--panel-border);
+            border-radius: 999px;
+            font-size: 0.62rem;
+            font-weight: 850;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .signal-badge[data-severity="high"] {
+            color: #ffb4b4;
+            border-color: rgba(255, 120, 120, 0.45);
+            background: rgba(255, 90, 90, 0.12);
+        }
+
+        .signal-badge[data-severity="medium"] {
+            color: #ffd27d;
+            border-color: rgba(255, 200, 110, 0.4);
+            background: rgba(255, 200, 110, 0.1);
+        }
+
+        .signal-badge[data-severity="low"] {
+            color: #bfe8ff;
+            border-color: rgba(140, 210, 255, 0.35);
+            background: rgba(140, 210, 255, 0.08);
+        }
+
+        .signal-badge[data-severity="positive"] {
+            color: var(--accent);
+            border-color: rgba(123, 231, 255, 0.4);
+            background: rgba(123, 231, 255, 0.1);
+        }
+
+        .signal-badge[data-severity="info"] {
+            color: var(--muted);
+        }
+
+        .analysis-result .signal-title {
+            margin: 0;
+            color: var(--text);
+            font-size: 0.76rem;
+            font-weight: 750;
+        }
+
+        .analysis-result .signal-desc {
+            margin: 0.12rem 0 0;
+            color: var(--muted);
+            font-size: 0.72rem;
+            line-height: 1.45;
+        }
+
+        .analysis-result .result-disclaimer {
+            color: var(--muted);
+            font-size: 0.66rem;
+            opacity: 0.75;
+        }
+
+        .sample-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.45rem;
+        }
+
+        .sample-label {
+            color: var(--muted);
+            font-size: 0.66rem;
+            font-weight: 800;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+
+        .sample-chip {
+            border: 1px solid var(--panel-border);
+            border-radius: 999px;
+            padding: 0.36rem 0.72rem;
+            background: transparent;
+            color: var(--text);
+            font: inherit;
+            font-size: 0.72rem;
             font-weight: 700;
+            cursor: pointer;
+            transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+        }
+
+        .sample-chip:hover {
+            border-color: var(--accent-strong);
+            color: var(--accent);
+            background: rgba(123, 231, 255, 0.08);
+        }
+
+        .field-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
+
+        .word-count {
+            color: var(--muted);
+            font-size: 0.68rem;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .word-count[data-state="ready"] {
+            color: var(--accent);
+        }
+
+        .status-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.6rem;
+        }
+
+        .ghost-action {
+            border: 1px solid var(--panel-border);
+            border-radius: 0.55rem;
+            padding: 0.28rem 0.6rem;
+            background: transparent;
+            color: var(--muted);
+            font: inherit;
+            font-size: 0.7rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: color 160ms ease, border-color 160ms ease;
+        }
+
+        .ghost-action:hover {
+            color: var(--accent);
+            border-color: var(--accent-strong);
+        }
+
+        .feature-card.is-targeted,
+        .command-card.is-targeted {
+            animation: target-pulse 1.6s ease;
+        }
+
+        @keyframes target-pulse {
+            0%, 100% { box-shadow: none; }
+            30% { box-shadow: 0 0 0 3px rgba(123, 231, 255, 0.35); }
         }
 
         .review-meter {
@@ -1639,6 +1847,11 @@
                             <p class="feature-label">News tab</p>
                             <h3>Analyze a claim or article.</h3>
                             <p>Paste an article or claim below, or provide a public URL for the secured source extractor.</p>
+                            <div class="sample-row">
+                                <span class="sample-label">Demo samples</span>
+                                <button class="sample-chip" type="button" data-sample="misleading">Misleading claim</button>
+                                <button class="sample-chip" type="button" data-sample="credible">Credible article</button>
+                            </div>
                             <div class="link-section">
                                 <h3>Quick Access Links</h3>
                                 <p>Use these trusted sources to fetch or verify articles before analysis:</p>
@@ -1651,7 +1864,10 @@
                             </div>
                             <form class="analysis-form" id="news-form">
                                 <div class="analysis-field">
-                                    <label for="news-content">Article or claim</label>
+                                    <div class="field-head">
+                                        <label for="news-content">Article or claim</label>
+                                        <span class="word-count" id="news-wordcount">0 words</span>
+                                    </div>
                                     <textarea class="analysis-textarea" id="news-content" maxlength="20000" placeholder="Paste a headline and article text, or a claim to assess."></textarea>
                                 </div>
                                 <div class="analysis-row">
@@ -1661,7 +1877,10 @@
                                     </div>
                                     <button class="dashboard-action" id="news-submit" type="submit"><span>Analyze news</span><span aria-hidden="true">→</span></button>
                                 </div>
-                                <p class="analysis-status" id="news-status" role="status" aria-live="polite">Enter at least 20 characters of article text.</p>
+                                <div class="status-row">
+                                    <p class="analysis-status" id="news-status" role="status" aria-live="polite">Enter at least 50 words for a grounded verdict, or load a demo sample.</p>
+                                    <button class="ghost-action" id="news-reset" type="button">Clear</button>
+                                </div>
                                 <div class="analysis-result" id="news-result" hidden></div>
                             </form>
                         </article>
@@ -1690,7 +1909,10 @@
                                     <label class="verified-option" for="verified-purchase"><input id="verified-purchase" type="checkbox"> Verified purchase</label>
                                 </div>
                                 <button class="dashboard-action" id="review-submit" type="submit"><span>Analyze review</span><span aria-hidden="true">→</span></button>
-                                <p class="analysis-status" id="review-status" role="status" aria-live="polite">Enter at least 10 characters of review text.</p>
+                                <div class="status-row">
+                                    <p class="analysis-status" id="review-status" role="status" aria-live="polite">Enter at least 10 characters of review text.</p>
+                                    <button class="ghost-action" id="review-reset" type="button">Clear</button>
+                                </div>
                                 <div class="analysis-result" id="review-result" hidden></div>
                             </form>
                         </article>
@@ -1732,6 +1954,9 @@
         const newsSubmit = document.getElementById("news-submit");
         const newsStatus = document.getElementById("news-status");
         const newsResult = document.getElementById("news-result");
+        const newsWordCount = document.getElementById("news-wordcount");
+        const newsReset = document.getElementById("news-reset");
+        const sampleButtons = document.querySelectorAll("[data-sample]");
         const reviewForm = document.getElementById("review-form");
         const reviewContent = document.getElementById("review-content");
         const productName = document.getElementById("product-name");
@@ -1741,6 +1966,7 @@
         const reviewSubmit = document.getElementById("review-submit");
         const reviewStatus = document.getElementById("review-status");
         const reviewResult = document.getElementById("review-result");
+        const reviewReset = document.getElementById("review-reset");
         const canvas = document.getElementById("hero-lightpass");
         const context = canvas.getContext("2d");
         const frameCount = 240;
@@ -1832,32 +2058,107 @@
             misinformative: "POTENTIALLY MISINFORMATIVE",
             genuine: "LIKELY GENUINE",
             suspicious: "SUSPICIOUS",
+            insufficient_input: "NOT ENOUGH TEXT TO ANALYSE",
         }[prediction] || String(prediction || "ANALYZED").replaceAll("_", " ").toUpperCase());
 
+        const predictionTone = prediction => {
+            if (prediction === "real" || prediction === "genuine") return "positive";
+            if (prediction === "misinformative" || prediction === "suspicious") return "negative";
+            if (prediction === "insufficient_input") return "info";
+            return "neutral";
+        };
+
+        const countWords = text => (String(text).trim().match(/\S+/g) || []).length;
+
+        const makeElement = (tag, className, text) => {
+            const element = document.createElement(tag);
+            if (className) element.className = className;
+            if (text !== undefined) element.textContent = text;
+            return element;
+        };
+
+        const severityRank = { high: 0, medium: 1, low: 2, info: 3, positive: 4 };
+
         const renderResult = (container, result) => {
-            const summary = document.createElement("div");
-            summary.className = "analysis-result-summary";
+            const prediction = String(result.prediction || "");
+            const isRefusal = prediction === "insufficient_input";
+            const confidenceValue = Number(result.confidence);
 
-            const verdict = document.createElement("span");
-            verdict.className = "result-verdict";
-            verdict.textContent = predictionLabel(result.prediction);
+            const summary = makeElement("div", "analysis-result-summary");
+            const verdict = makeElement("span", "result-verdict", predictionLabel(prediction));
+            verdict.dataset.verdict = predictionTone(prediction);
+            summary.append(verdict);
 
-            const confidence = document.createElement("span");
-            confidence.className = "result-confidence";
-            confidence.textContent = `${Math.round((Number(result.confidence) || 0) * 100)}% confidence`;
-            summary.append(verdict, confidence);
+            const confidence = makeElement("span", "result-confidence");
+            confidence.textContent = isRefusal || !Number.isFinite(confidenceValue)
+                ? "No verdict issued"
+                : `${Math.round(confidenceValue * 100)}% confidence`;
+            summary.append(confidence);
 
-            const explanation = document.createElement("p");
-            explanation.textContent = result.explanation || result.disclaimer || "Analysis complete.";
+            const explanation = makeElement(
+                "p",
+                "result-explanation",
+                result.explanation || result.disclaimer || "Analysis complete.",
+            );
 
-            const signalTitles = Array.isArray(result.signals)
-                ? result.signals.map(signal => signal && signal.title).filter(Boolean).slice(0, 2)
-                : [];
-            const signals = document.createElement("p");
-            signals.className = "result-signals";
-            signals.textContent = signalTitles.length ? `Signals: ${signalTitles.join(" · ")}` : `Sentiment: ${result.sentiment || "not available"}`;
+            const nodes = [summary, explanation];
 
-            container.replaceChildren(summary, explanation, signals);
+            const metrics = [];
+            if (result.credibility_score !== null && result.credibility_score !== undefined && Number.isFinite(Number(result.credibility_score))) {
+                metrics.push(["Credibility", `${Math.round(Number(result.credibility_score) * 100)} / 100`]);
+            }
+            if (result.bias_level) {
+                const bias = String(result.bias_level);
+                metrics.push(["Bias", bias.charAt(0).toUpperCase() + bias.slice(1)]);
+            }
+            if (Number.isFinite(Number(result.word_count)) && Number(result.word_count) > 0) {
+                metrics.push(["Words analysed", formatCount(result.word_count)]);
+            }
+            if (Number.isFinite(Number(result.processing_time_ms)) && Number(result.processing_time_ms) > 0) {
+                metrics.push(["Processing", `${formatCount(result.processing_time_ms)} ms`]);
+            }
+            if (result.model) {
+                metrics.push(["Engine", result.model]);
+            }
+            if (metrics.length) {
+                const meta = makeElement("div", "result-meta");
+                metrics.forEach(([label, value]) => {
+                    const item = makeElement("span", "result-meta-item");
+                    item.append(makeElement("span", "", label), makeElement("strong", "", value));
+                    meta.append(item);
+                });
+                nodes.push(meta);
+            }
+
+            const signals = Array.isArray(result.signals) ? result.signals.filter(Boolean) : [];
+            if (signals.length) {
+                nodes.push(makeElement("p", "signals-heading", "Evidence signals"));
+                const list = makeElement("ul", "signal-list");
+                signals
+                    .slice()
+                    .sort((a, b) => (severityRank[a.severity] ?? 5) - (severityRank[b.severity] ?? 5))
+                    .slice(0, 6)
+                    .forEach(signal => {
+                        const severity = String(signal.severity || "info").toLowerCase();
+                        const item = makeElement("li", "signal-item");
+                        const badge = makeElement("span", "signal-badge", severity);
+                        badge.dataset.severity = severity;
+                        const copy = makeElement("div", "");
+                        copy.append(
+                            makeElement("p", "signal-title", signal.title || "Signal"),
+                            makeElement("p", "signal-desc", signal.description || ""),
+                        );
+                        item.append(badge, copy);
+                        list.append(item);
+                    });
+                nodes.push(list);
+            }
+
+            if (result.disclaimer) {
+                nodes.push(makeElement("p", "result-disclaimer", result.disclaimer));
+            }
+
+            container.replaceChildren(...nodes);
             container.hidden = false;
         };
 
@@ -1887,12 +2188,62 @@
             reviewRatingOutput.textContent = `${reviewRating.value} / 5`;
         };
 
+        const NEWS_SAMPLES = {
+            misleading: {
+                headline: "Boiled lemon water cures cancer, leaked hospital report claims",
+                body: "BREAKING: Scientists have confirmed that drinking boiled lemon water every morning kills 99 percent of cancer cells and completely prevents the disease. A leaked internal report from a major hospital claims that chemotherapy is a scam designed by pharmaceutical companies to keep patients sick and dependent on expensive drugs. Doctors are reportedly furious that this simple natural remedy has been hidden from the public for decades. Share this immediately before it gets deleted, because the medical establishment does not want you to know the truth. Thousands of people have already cured themselves using this secret method, and many say their tumors disappeared within two weeks. Big Pharma and the mainstream media are working together to suppress this information, but brave whistleblowers have finally exposed their evil plan.",
+            },
+            credible: {
+                headline: "Federal Reserve raises interest rates to highest level in 22 years",
+                body: "The Federal Reserve raised its benchmark interest rate by a quarter percentage point on Wednesday, bringing the target range to 5.25 to 5.5 percent, the highest level in 22 years. In a statement released after the two-day policy meeting, the central bank said inflation remains elevated and that further tightening may be appropriate if economic data warrant it. Fed Chair Jerome Powell told reporters that the committee will make decisions meeting by meeting and continues to aim for a soft landing that brings inflation back to its 2 percent target without causing a sharp rise in unemployment. Economists surveyed by Reuters expect the Fed to hold rates steady at its next meeting in September, though several noted that another increase remains possible if price pressures persist. Stocks initially fell after the announcement but recovered most of their losses by the close of trading.",
+            },
+        };
+
+        const updateNewsWordCount = () => {
+            const words = countWords(newsContent.value);
+            newsWordCount.textContent = `${formatCount(words)} ${words === 1 ? "word" : "words"}`;
+            if (words >= 50) {
+                newsWordCount.dataset.state = "ready";
+            } else {
+                delete newsWordCount.dataset.state;
+            }
+        };
+
+        newsContent.addEventListener("input", updateNewsWordCount);
+        updateNewsWordCount();
+
+        sampleButtons.forEach(button => {
+            button.addEventListener("click", () => {
+                const sample = NEWS_SAMPLES[button.dataset.sample];
+                if (!sample) return;
+                newsContent.value = `${sample.headline}\n\n${sample.body}`;
+                newsUrl.value = "";
+                updateNewsWordCount();
+                newsForm.requestSubmit();
+            });
+        });
+
+        newsReset.addEventListener("click", () => {
+            newsForm.reset();
+            newsResult.hidden = true;
+            newsResult.replaceChildren();
+            updateNewsWordCount();
+            setStatus(newsStatus, "Enter at least 50 words for a grounded verdict, or load a demo sample.");
+        });
+
         newsForm.addEventListener("submit", async event => {
             event.preventDefault();
             const content = newsContent.value.trim();
             const sourceUrl = newsUrl.value.trim();
-            if (!sourceUrl && content.length < 20) {
-                setStatus(newsStatus, "Enter at least 20 characters of article text, or provide a public source URL.", "error");
+            const wordCount = countWords(content);
+            if (!sourceUrl && wordCount < 50) {
+                setStatus(
+                    newsStatus,
+                    wordCount
+                        ? `Add ${50 - wordCount} more ${50 - wordCount === 1 ? "word" : "words"} — at least 50 words are needed for a grounded verdict.`
+                        : "Enter at least 50 words of article text, or provide a public source URL.",
+                    "error",
+                );
                 return;
             }
 
@@ -1916,7 +2267,13 @@
                     });
                 }
                 renderResult(newsResult, result);
-                setStatus(newsStatus, "News analysis complete.", "success");
+                setStatus(
+                    newsStatus,
+                    result.prediction === "insufficient_input"
+                        ? "Analysis complete — the article body was too thin for a verdict."
+                        : "News analysis complete.",
+                    result.prediction === "insufficient_input" ? "" : "success",
+                );
                 void refreshStats();
             } catch (error) {
                 setStatus(newsStatus, error instanceof Error ? error.message : "News analysis failed. Please try again.", "error");
@@ -1960,6 +2317,14 @@
             }
         });
 
+        reviewReset.addEventListener("click", () => {
+            reviewForm.reset();
+            reviewResult.hidden = true;
+            reviewResult.replaceChildren();
+            updateReviewRating();
+            setStatus(reviewStatus, "Enter at least 10 characters of review text.");
+        });
+
         void refreshStats();
 
         const collapseRail = () => {
@@ -1983,6 +2348,9 @@
                     collapseRail();
                 } else {
                     expandRail(item);
+                    if (item.dataset.title === "System status") {
+                        void refreshStats();
+                    }
                 }
             });
         });
@@ -2157,13 +2525,31 @@
             }
         };
 
+        const scrollToPanel = selector => {
+            const target = document.querySelector(selector);
+            if (!target) return;
+            const alreadyOnDashboard = !window.fullpage_api || window.location.hash === "#main";
+            if (!alreadyOnDashboard) {
+                window.fullpage_api.moveTo(FP_SECTION_INDEX.main);
+            }
+            window.setTimeout(() => {
+                target.scrollIntoView({ behavior: "smooth", block: "start" });
+                target.classList.add("is-targeted");
+                window.setTimeout(() => target.classList.remove("is-targeted"), 1700);
+            }, alreadyOnDashboard ? 0 : 760);
+        };
+
         document.querySelectorAll('a[href^="#"]').forEach(anchor => {
             if (anchor.classList.contains("hero-cta")) return; // handled by the dedicated smooth handler below
             anchor.addEventListener("click", event => {
                 const target = anchor.getAttribute("href").slice(1);
+                if (!target) return;
                 if (FP_SECTION_INDEX[target]) {
                     event.preventDefault();
                     goToSection(target);
+                } else if (document.getElementById(target)) {
+                    event.preventDefault();
+                    scrollToPanel(`#${target}`);
                 }
             });
         });

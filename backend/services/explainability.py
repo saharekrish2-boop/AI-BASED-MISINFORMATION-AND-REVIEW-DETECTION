@@ -175,6 +175,125 @@ def _sig(sig_id: str, title: str, description: str, severity: str) -> dict:
 
 
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3, "positive": 4}
+
+DISCOURSE_STARTERS = {
+    "however", "additionally", "moreover", "furthermore", "overall", "notably",
+    "consequently", "meanwhile", "ultimately", "typically", "specifically",
+    "particularly", "instead", "further", "finally", "secondly", "thirdly",
+}
+_SENTENCE_TOKENS_RE = re.compile(r"[A-Za-z']+")
+_SEPARATORS_PER_WORDS = 55
+_MIN_STYLE_MARKERS = 3
+_MIN_STYLE_WORDS = 60
+
+# Phrases chat models reach for far more often than ordinary web copy does.
+# Sentence linkers are excluded because DISCOURSE_STARTERS already measures those,
+# and counting one trait twice would inflate the flag.
+LLM_SCAFFOLD_PATTERNS = [
+    ("in conclusion", r"\bin conclusion\b"),
+    ("it's worth noting", r"\bit (?:is|'s) worth noting\b"),
+    ("when it comes to", r"\bwhen it comes to\b"),
+    ("in today's fast-paced world", r"\bin (?:today's|the modern) (?:fast-paced )?world\b"),
+    ("plays a crucial role", r"\bplay(?:s|ed)? a (?:crucial|vital|pivotal|significant|key) role\b"),
+    ("seamless", r"\bseamless(?:ly)?\b"),
+    ("delve", r"\bdelve"),
+    ("elevate", r"\belevat(?:e|es|ing|ion)\b"),
+    ("streamline", r"\bstreamlin(?:e|es|ing|g)\b"),
+    ("unprecedented", r"\bunprecedented\b"),
+    ("holistic", r"\bholistic\b"),
+    ("rich tapestry", r"\btapestry\b"),
+    ("navigate the complex", r"\bnavigat(?:e|ing) (?:the|this) (?:complex|evolving)\b"),
+]
+_CONTRACTION_RE = re.compile(r"\b\w+['’](?:t|s|re|ve|ll|d|m)\b", re.IGNORECASE)
+
+
+def _sentence_lengths(text: str) -> list[int]:
+    return [
+        len(_SENTENCE_TOKENS_RE.findall(part))
+        for part in SENTENCE_SPLIT_RE.split(text or "")
+        if _SENTENCE_TOKENS_RE.findall(part)
+    ]
+
+
+def machine_style_signal(text: str, stats: dict, casual_register: bool = False) -> Optional[dict]:
+    """Note prose that shows machine-drafting habits. Info severity only.
+
+    Deliberately never adjusts credibility or confidence: careful human editing
+    shares these traits, so the flag reports measured counts and names itself a
+    possibility rather than a determination. ``casual_register`` is set for product
+    reviews, where formal punctuation-free prose is itself an outlier.
+    """
+    words = _SENTENCE_TOKENS_RE.findall(text or "")
+    if len(words) < _MIN_STYLE_WORDS:
+        return None
+
+    markers: list[str] = []
+
+    lengths = _sentence_lengths(text)
+    if len(lengths) >= 4:
+        mean = sum(lengths) / len(lengths)
+        spread = (sum((x - mean) ** 2 for x in lengths) / len(lengths)) ** 0.5
+        variation = spread / mean if mean else 1.0
+        if variation < 0.35:
+            markers.append(
+                f"sentence lengths are unusually uniform ({variation:.2f} variation "
+                f"across {len(lengths)} sentences, averaging {mean:.0f} words)"
+            )
+
+    starts = [
+        _SENTENCE_TOKENS_RE.findall(part)[0].lower()
+        for part in SENTENCE_SPLIT_RE.split(text or "")
+        if _SENTENCE_TOKENS_RE.findall(part)
+    ]
+    discourse = sum(1 for word in starts if word in DISCOURSE_STARTERS)
+    if discourse >= 3 and len(starts) >= 4 and discourse / len(starts) >= 0.2:
+        markers.append(
+            f"{discourse} of {len(starts)} sentences open with a formal linking word "
+            "(however, additionally, overall)"
+        )
+
+    avg_len = stats.get("avg_word_length") or 0.0
+    if avg_len >= 4.9:
+        markers.append(
+            f"average word length {avg_len:.2f} characters, which is high for "
+            "everyday consumer or news writing"
+        )
+
+    separators = (text or "").count("—") + (text or "").count(" ;")
+    if len(words) >= _SEPARATORS_PER_WORDS and separators >= 2:
+        markers.append(
+            f"{separators} em-dashes or spaced semicolons in {len(words)} words"
+        )
+
+    lower = (text or "").lower()
+    scaffold = [label for label, pattern in LLM_SCAFFOLD_PATTERNS
+                if re.search(pattern, lower)]
+    if len(scaffold) >= 2:
+        markers.append(
+            f"{len(scaffold)} stock phrasings common in generated copy (for example: "
+            + ", ".join(scaffold[:3]) + ")"
+        )
+
+    if (casual_register and not _CONTRACTION_RE.search(text or "")
+            and not stats.get("exclamation_count")
+            and not stats.get("caps_word_count")):
+        markers.append(
+            "no contractions, exclamation marks or capitalised emphasis anywhere, "
+            "which is unusual for a customer review"
+        )
+
+    if len(markers) < _MIN_STYLE_MARKERS:
+        return None
+
+    return _sig(
+        "machine-style-markers",
+        "Style markers consistent with machine-drafted text",
+        "This text shows " + str(len(markers)) + " drafting habits common in "
+        "AI-generated or AI-polished copy: " + "; ".join(markers) + ". This is a "
+        "possibility raised by measurable style only — it is not authorship "
+        "detection, and careful human writing shares these habits.",
+        "info",
+    )
 # ---------------------------------------------------------------------------
 # NEWS signals
 # ---------------------------------------------------------------------------
@@ -312,6 +431,10 @@ def news_signals(
             "treat this result with caution.",
             "info",
         ))
+
+    machine = machine_style_signal(full, stats)
+    if machine:
+        signals.append(machine)
 
     signals.sort(key=lambda s: _SEVERITY_ORDER.get(s["severity"], 5))
     return signals[:8]
@@ -518,6 +641,10 @@ def review_signals(
             "info",
         ))
 
+    machine = machine_style_signal(text, stats, casual_register=True)
+    if machine:
+        signals.append(machine)
+
     signals.sort(key=lambda s: _SEVERITY_ORDER.get(s["severity"], 5))
     return signals[:8]
 
@@ -581,6 +708,9 @@ def general_signals(
     if confidence < 0.7:
         signals.append(_sig("low-confidence", "Low-confidence prediction",
                             "Close to the decision boundary - treat with caution.", "info"))
+    machine = machine_style_signal(text, stats)
+    if machine:
+        signals.append(machine)
     signals.sort(key=lambda s: _SEVERITY_ORDER.get(s["severity"], 5))
     return signals[:8]
 

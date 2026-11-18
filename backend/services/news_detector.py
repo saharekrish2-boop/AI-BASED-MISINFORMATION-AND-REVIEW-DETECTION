@@ -8,6 +8,18 @@ from . import explainability as ex
 from . import groq as om
 
 _WORD_RE = re.compile(r"[A-Za-z']+")
+_MAX_ANALYSIS_CHARS = 6000
+
+
+def _trim_for_model(content: str, limit: int = _MAX_ANALYSIS_CHARS) -> str:
+    """Keep long articles inside the model's per-request token budget."""
+    if len(content) <= limit:
+        return content
+    cut = content[:limit]
+    boundary = max(cut.rfind(". "), cut.rfind(".\n"), cut.rfind("! "), cut.rfind("? "))
+    if boundary > limit * 0.6:
+        cut = cut[:boundary + 1]
+    return cut.rstrip()
 
 
 def _insufficient_input(stats: dict, body_words: int, source_url: str | None) -> dict:
@@ -60,12 +72,16 @@ def _annotate_evidence(flags: list) -> list:
 
 def analyze_news(headline: str, content: str, source_url: str | None = None) -> dict:
     """Run Groq news analysis; keep local text stats as context."""
+    original_content = content or ""
+    body_words = len(_WORD_RE.findall(original_content))
+    if body_words < config.MIN_ARTICLE_WORDS:
+        text = f"{headline}. {original_content}".strip() if headline else original_content.strip()
+        return _insufficient_input(ex.text_statistics(text), body_words, source_url)
+
+    content = _trim_for_model(original_content)
+    was_trimmed = len(content) < len(original_content)
     text = f"{headline}. {content}".strip() if headline else content.strip()
     stats = ex.text_statistics(text)
-
-    body_words = len(_WORD_RE.findall(content or ""))
-    if body_words < config.MIN_ARTICLE_WORDS:
-        return _insufficient_input(stats, body_words, source_url)
 
     res = om.analyze_news(headline or "", content)
     flags = _annotate_evidence(res.get("flags", []))
@@ -83,6 +99,16 @@ def analyze_news(headline: str, content: str, source_url: str | None = None) -> 
         groq_flags=flags,
         groq_explanation=res.get("explanation", ""),
     )
+    if was_trimmed:
+        signals.insert(0, {
+            "id": "article-trimmed",
+            "title": "Long article trimmed",
+            "description": (
+                f"Only the first {len(content):,} characters were analysed so the "
+                "request fits within the model's token budget."
+            ),
+            "severity": "info",
+        })
     return {
         "prediction": res["prediction"],
         "confidence": res["confidence"],
